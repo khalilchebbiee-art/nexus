@@ -46,9 +46,14 @@ services:
   - type: web
     name: nexus-web
     runtime: static
-    buildCommand: corepack enable && pnpm install --frozen-lockfile=false && pnpm --filter @nexus/web build
+    # Render already installs workspace deps with pnpm before this runs, so we
+    # only need to build. (Don't call `corepack enable` — Render's /usr/bin is
+    # read-only and it errors.)
+    buildCommand: pnpm --filter @nexus/web build
     staticPublishPath: ./apps/web/dist
     envVars:
+      - key: NODE_VERSION
+        value: "22.11.0"
       - key: VITE_API_URL
         sync: false # set to the nexus-api URL after first deploy
       - key: VITE_SOCKET_URL
