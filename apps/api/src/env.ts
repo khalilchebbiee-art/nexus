@@ -1,0 +1,27 @@
+import "dotenv/config";
+import { z } from "zod";
+
+const envSchema = z.object({
+  DATABASE_URL: z.string().url(),
+  JWT_SECRET: z.string().min(32),
+  API_PORT: z.coerce.number().default(4000),
+  CLIENT_ORIGIN: z.string().url().default("http://localhost:5173"),
+  MEDIA_STORAGE_PROVIDER: z.enum(["local", "cloud"]).default("local"),
+  MEDIA_PUBLIC_BASE_URL: z.string().url().optional(),
+  // Comma-separated STUN urls. Defaults to Google's public STUN servers.
+  STUN_URLS: z.string().default("stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302"),
+  // Optional TURN relay for restrictive NATs / China network fallback.
+  TURN_URLS: z.string().optional(),
+  TURN_USERNAME: z.string().optional(),
+  TURN_CREDENTIAL: z.string().optional(),
+  // SMTP for verification emails. If unset, codes are logged to the API console
+  // (development mode) instead of being emailed.
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.coerce.number().optional(),
+  SMTP_SECURE: z.coerce.boolean().default(false),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  SMTP_FROM: z.string().default("Nexus <no-reply@nexus.local>")
+});
+
+export const env = envSchema.parse(process.env);

@@ -1,0 +1,1460 @@
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import type React from "react";
+import { io, type Socket } from "socket.io-client";
+import {
+  Bell,
+  CalendarClock,
+  Check,
+  CheckCheck,
+  ChevronDown,
+  Download,
+  Hash,
+  Images,
+  Lock,
+  LogOut,
+  Menu,
+  MessageCircle,
+  Mic,
+  Moon,
+  Paperclip,
+  Pencil,
+  Phone,
+  PhoneCall,
+  Plus,
+  Search,
+  Send,
+  Sun,
+  Trash2,
+  UserPlus,
+  Users,
+  Video,
+  X
+} from "lucide-react";
+import { api, type Session } from "./api";
+import { CallProvider, useCall } from "./call";
+import { decryptText, deriveConversationKey, encryptText, loadLocalPrivateKey, setupKeys, WrongPasswordError } from "./e2ee";
+import type { CallRecord, CallStats, Conversation, FriendRequest, GlobalSearch, Message, Notification, ReceiptUpdate, User } from "./types";
+
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL ?? "http://localhost:4000";
+const savedTheme = localStorage.getItem("nexus-theme");
+
+type EncryptionController = {
+  ready: boolean;
+  canEncrypt: (conversation?: Conversation | null) => boolean;
+  encryptForConversation: (conversation: Conversation, text: string) => Promise<{ body: string; encrypted: boolean }>;
+  decryptForConversation: (conversation: Conversation, message: Message) => Promise<string | null>;
+};
+
+const EncryptionContext = createContext<EncryptionController>({
+  ready: false,
+  canEncrypt: () => false,
+  encryptForConversation: async (_conversation, text) => ({ body: text, encrypted: false }),
+  decryptForConversation: async (_conversation, message) => message.body
+});
+
+function useEncryption() {
+  return useContext(EncryptionContext);
+}
+
+function peerWithKey(conversation: Conversation, currentUserId: string) {
+  if (conversation.type !== "DIRECT") return null;
+  const peer = conversation.members.find((member) => member.id !== currentUserId);
+  return peer?.publicKey ? peer : null;
+}
+
+export function App() {
+  const [session, setSession] = useState<Session | null>(() => {
+    const saved = localStorage.getItem("nexus-session");
+    return saved ? (JSON.parse(saved) as Session) : null;
+  });
+  const [theme, setTheme] = useState(savedTheme === "light" ? "light" : "dark");
+  const token = session?.token;
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem("nexus-theme", theme);
+  }, [theme]);
+
+  useEffect(() => {
+    if (!token) return;
+    void api.me(token).then(({ user }) => setSession((current) => (current ? { ...current, user } : current)));
+  }, [token]);
+
+  useEffect(() => {
+    if (session) localStorage.setItem("nexus-session", JSON.stringify(session));
+  }, [session]);
+
+  function logout() {
+    localStorage.removeItem("nexus-session");
+    setSession(null);
+  }
+
+  if (!session) {
+    return <AuthScreen onSession={setSession} theme={theme} onThemeChange={setTheme} />;
+  }
+
+  return <Messenger session={session} setSession={setSession} onLogout={logout} theme={theme} onThemeChange={setTheme} />;
+}
+
+function AuthScreen({
+  onSession,
+  theme,
+  onThemeChange
+}: {
+  onSession: (session: Session) => void;
+  theme: string;
+  onThemeChange: (theme: string) => void;
+}) {
+  const [mode, setMode] = useState<"login" | "register">("login");
+  const [step, setStep] = useState<"credentials" | "verify">("credentials");
+  const [error, setError] = useState("");
+  const [info, setInfo] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [pendingEmail, setPendingEmail] = useState("");
+  const [pendingPassword, setPendingPassword] = useState("");
+
+  // Restore/generate this device's E2EE keys using the password the user just
+  // typed. Failures are non-fatal — the in-app unlock prompt can recover later.
+  async function provisionKeys(session: Session, password: string) {
+    try {
+      await setupKeys(session.token, session.user.id, password);
+    } catch (err) {
+      console.warn("Encryption key setup deferred:", err);
+    }
+  }
+
+  function switchMode(next: "login" | "register") {
+    setMode(next);
+    setStep("credentials");
+    setError("");
+    setInfo("");
+  }
+
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError("");
+    setInfo("");
+    setLoading(true);
+    const data = new FormData(event.currentTarget);
+    try {
+      if (mode === "login") {
+        const password = String(data.get("password"));
+        const result = await api.login({ emailOrUsername: String(data.get("identity")), password });
+        await provisionKeys(result, password);
+        onSession(result);
+      } else {
+        const email = String(data.get("email"));
+        const password = String(data.get("password"));
+        await api.register({
+          email,
+          username: String(data.get("username")),
+          displayName: String(data.get("displayName")),
+          password
+        });
+        setPendingEmail(email);
+        setPendingPassword(password);
+        setStep("verify");
+        setInfo(`We sent a 6-digit code to ${email}.`);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to continue");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function submitVerify(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError("");
+    setInfo("");
+    setLoading(true);
+    const data = new FormData(event.currentTarget);
+    try {
+      const result = await api.verifyEmail({ email: pendingEmail, code: String(data.get("code")).trim() });
+      await provisionKeys(result, pendingPassword);
+      onSession(result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Invalid code");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function resend() {
+    setError("");
+    try {
+      await api.resendCode(pendingEmail);
+      setInfo(`A new code was sent to ${pendingEmail}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to resend");
+    }
+  }
+
+  return (
+    <main className="auth-page">
+      <button className="icon-button theme-float" onClick={() => onThemeChange(theme === "dark" ? "light" : "dark")}>
+        {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
+      </button>
+      <section className="auth-stage">
+        <div className="brand-panel">
+          <div className="brand-mark">N</div>
+          <h1>Nexus</h1>
+          <p>Secure private messaging with rich media and realtime presence-ready foundations.</p>
+          <div className="signal-grid">
+            <span>Encrypted sessions</span>
+            <span>Realtime delivery</span>
+            <span>Media sharing</span>
+            <span>Responsive UI</span>
+          </div>
+        </div>
+        {step === "verify" ? (
+          <form className="auth-card" onSubmit={submitVerify}>
+            <h2>Verify your email</h2>
+            <p className="muted">Enter the 6-digit code we emailed to finish creating your account.</p>
+            <label>
+              Verification code
+              <input name="code" inputMode="numeric" autoComplete="one-time-code" pattern="\d{6}" maxLength={6} placeholder="000000" required autoFocus />
+            </label>
+            {info && <p className="status">{info}</p>}
+            {error && <p className="error">{error}</p>}
+            <button className="primary-button" disabled={loading}>
+              {loading ? "Verifying..." : "Verify & enter"}
+            </button>
+            <div className="verify-actions">
+              <button type="button" className="link-button" onClick={resend}>Resend code</button>
+              <button type="button" className="link-button" onClick={() => switchMode("register")}>Start over</button>
+            </div>
+          </form>
+        ) : (
+          <form className="auth-card" onSubmit={submit}>
+            <div className="segmented">
+              <button type="button" className={mode === "login" ? "active" : ""} onClick={() => switchMode("login")}>
+                Login
+              </button>
+              <button type="button" className={mode === "register" ? "active" : ""} onClick={() => switchMode("register")}>
+                Register
+              </button>
+            </div>
+            <h2>{mode === "login" ? "Welcome back" : "Create your profile"}</h2>
+            {mode === "register" && (
+              <>
+                <label>
+                  Email
+                  <input name="email" type="email" autoComplete="email" required />
+                </label>
+                <label>
+                  Username
+                  <input name="username" autoComplete="username" minLength={3} required />
+                </label>
+                <label>
+                  Display name
+                  <input name="displayName" autoComplete="name" minLength={2} required />
+                </label>
+              </>
+            )}
+            {mode === "login" && (
+              <label>
+                Email or username
+                <input name="identity" autoComplete="username" required />
+              </label>
+            )}
+            <label>
+              Password
+              <input name="password" type="password" autoComplete={mode === "login" ? "current-password" : "new-password"} minLength={10} required />
+            </label>
+            {error && <p className="error">{error}</p>}
+            <button className="primary-button" disabled={loading}>
+              {loading ? "Working..." : mode === "login" ? "Enter Nexus" : "Create account"}
+            </button>
+          </form>
+        )}
+      </section>
+    </main>
+  );
+}
+
+function Messenger({
+  session,
+  setSession,
+  onLogout,
+  theme,
+  onThemeChange
+}: {
+  session: Session;
+  setSession: React.Dispatch<React.SetStateAction<Session | null>>;
+  onLogout: () => void;
+  theme: string;
+  onThemeChange: (theme: string) => void;
+}) {
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [selectedId, setSelectedId] = useState("");
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [search, setSearch] = useState("");
+  const [results, setResults] = useState<User[]>([]);
+  const [friends, setFriends] = useState<User[]>([]);
+  const [requests, setRequests] = useState<FriendRequest[]>([]);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [galleryOpen, setGalleryOpen] = useState(false);
+  const [globalQuery, setGlobalQuery] = useState("");
+  const [globalResults, setGlobalResults] = useState<GlobalSearch>({ messages: [], files: [], conversations: [] });
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [unread, setUnread] = useState(0);
+  const [mobileListOpen, setMobileListOpen] = useState(true);
+  const [status, setStatus] = useState("");
+  const [callHistoryOpen, setCallHistoryOpen] = useState(false);
+  const [socket, setSocket] = useState<Socket | null>(null);
+  const socketRef = useRef<Socket | null>(null);
+  const activeConversationRef = useRef("");
+
+  const selected = conversations.find((conversation) => conversation.id === selectedId) ?? conversations[0];
+  const peer = selected?.members.find((member) => member.id !== session.user.id) ?? selected?.members[0];
+  const selectedTitle = selected ? conversationTitle(selected, session.user.id) : "";
+
+  const loadConversations = useCallback(async () => {
+    const { conversations } = await api.conversations(session.token);
+    setConversations(conversations);
+  }, [session.token]);
+
+  const loadFriends = useCallback(async () => {
+    const { friends } = await api.friends(session.token);
+    setFriends(friends);
+  }, [session.token]);
+
+  const loadRequests = useCallback(async () => {
+    const { requests } = await api.friendRequests(session.token);
+    setRequests(requests);
+  }, [session.token]);
+
+  const loadNotifications = useCallback(async () => {
+    const result = await api.notifications(session.token);
+    setNotifications(result.notifications);
+    setUnread(result.unread);
+  }, [session.token]);
+
+  const refresh = useCallback(async () => {
+    await Promise.all([loadConversations(), loadFriends(), loadRequests(), loadNotifications()]);
+  }, [loadConversations, loadFriends, loadNotifications, loadRequests]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  useEffect(() => {
+    if (!selectedId && conversations[0]) setSelectedId(conversations[0].id);
+  }, [conversations, selectedId]);
+
+  useEffect(() => {
+    const socket = io(SOCKET_URL, { auth: { token: session.token } });
+    socketRef.current = socket;
+    setSocket(socket);
+    socket.on("message:new", (message: Message) => {
+      setMessages((current) => (current.some((item) => item.id === message.id) ? current : [...current, message]));
+      // If the new message lands in the conversation we're looking at, mark it read.
+      if (message.conversationId === activeConversationRef.current && message.senderId !== session.user.id) {
+        socket.emit("conversation:read", message.conversationId);
+      }
+      void loadConversations();
+      void loadNotifications();
+    });
+    socket.on("message:updated", (message: Message) => {
+      setMessages((current) => current.map((item) => (item.id === message.id ? message : item)));
+      void loadConversations();
+    });
+    socket.on("receipt:update", (receipt: ReceiptUpdate) => {
+      setConversations((current) =>
+        current.map((conversation) =>
+          conversation.id === receipt.conversationId
+            ? {
+                ...conversation,
+                members: conversation.members.map((member) =>
+                  member.id === receipt.userId
+                    ? {
+                        ...member,
+                        lastDeliveredAt: receipt.lastDeliveredAt ?? member.lastDeliveredAt ?? null,
+                        lastReadAt: receipt.lastReadAt ?? member.lastReadAt ?? null
+                      }
+                    : member
+                )
+              }
+            : conversation
+        )
+      );
+    });
+    return () => {
+      socket.disconnect();
+      setSocket(null);
+    };
+  }, [loadConversations, loadNotifications, session.token]);
+
+  useEffect(() => {
+    if (!selected?.id) return;
+    activeConversationRef.current = selected.id;
+    socketRef.current?.emit("conversation:join", selected.id);
+    socketRef.current?.emit("conversation:read", selected.id);
+    void api.messages(session.token, selected.id).then(({ messages }) => setMessages(messages));
+    setMobileListOpen(false);
+    return () => {
+      activeConversationRef.current = "";
+    };
+  }, [selected?.id, session.token]);
+
+  useEffect(() => {
+    const handle = window.setTimeout(() => {
+      if (search.trim().length >= 2) {
+        void api.searchUsers(session.token, search).then(({ users }) => setResults(users));
+      } else {
+        setResults([]);
+      }
+    }, 250);
+    return () => window.clearTimeout(handle);
+  }, [search, session.token]);
+
+  useEffect(() => {
+    const handle = window.setTimeout(() => {
+      if (globalQuery.trim().length >= 2) {
+        void api.globalSearch(session.token, globalQuery).then(setGlobalResults);
+      } else {
+        setGlobalResults({ messages: [], files: [], conversations: [] });
+      }
+    }, 260);
+    return () => window.clearTimeout(handle);
+  }, [globalQuery, session.token]);
+
+  async function addFriend(userId: string) {
+    try {
+      await api.sendFriendRequest(session.token, userId);
+      setStatus("Friend request sent");
+      setResults((users) => users.filter((user) => user.id !== userId));
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : "Unable to send request");
+    }
+  }
+
+  async function acceptRequest(requestId: string) {
+    const { conversationId } = await api.acceptFriendRequest(session.token, requestId);
+    setSelectedId(conversationId);
+    await refresh();
+  }
+
+  async function declineRequest(requestId: string) {
+    await api.declineFriendRequest(session.token, requestId);
+    await loadRequests();
+  }
+
+  async function createConversation(input: { type: "GROUP" | "CHANNEL"; name: string; description: string; memberIds: string[] }) {
+    const { conversation } = await api.createConversation(session.token, input);
+    setConversations((current) => [conversation, ...current]);
+    setSelectedId(conversation.id);
+    setCreateOpen(false);
+  }
+
+  async function openNotification(notification: Notification) {
+    if (notification.conversationId) setSelectedId(notification.conversationId);
+    await api.markNotificationsRead(session.token);
+    await loadNotifications();
+  }
+
+  return (
+    <CallProvider socket={socket} self={session.user} token={session.token}>
+    <EncryptionProvider token={session.token} user={session.user}>
+    <main className="app-shell">
+      <aside className={`sidebar ${mobileListOpen ? "open" : ""}`}>
+        <div className="topbar">
+          <div className="identity">
+            <Avatar user={session.user} />
+            <div>
+              <strong>{session.user.displayName}</strong>
+              <span>@{session.user.username}</span>
+            </div>
+          </div>
+          <div className="top-actions">
+            <button className="icon-button" onClick={() => onThemeChange(theme === "dark" ? "light" : "dark")} title="Toggle theme">
+              {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
+            </button>
+            <button className="icon-button" onClick={() => setCreateOpen(true)} title="Create group or channel">
+              <Plus size={18} />
+            </button>
+            <button className="icon-button" onClick={() => setProfileOpen(true)} title="Profile">
+              <UserPlus size={18} />
+            </button>
+            <button className="icon-button" onClick={onLogout} title="Log out">
+              <LogOut size={18} />
+            </button>
+          </div>
+        </div>
+
+        <div className="search-box">
+          <Search size={18} />
+          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search usernames" />
+        </div>
+
+        <div className="search-box">
+          <Hash size={18} />
+          <input value={globalQuery} onChange={(event) => setGlobalQuery(event.target.value)} placeholder="Global search" />
+        </div>
+
+        {status && <p className="status">{status}</p>}
+
+        {(globalResults.conversations.length > 0 || globalResults.messages.length > 0 || globalResults.files.length > 0) && (
+          <section className="panel">
+            <h3>Search</h3>
+            {globalResults.conversations.map((conversation) => (
+              <button key={conversation.id} className="result-item" onClick={() => setSelectedId(conversation.id)}>
+                {conversationTitle(conversation, session.user.id)}
+              </button>
+            ))}
+            {globalResults.messages.slice(0, 4).map((message) => (
+              <button key={message.id} className="result-item" onClick={() => setSelectedId(message.conversationId)}>
+                {message.body || previewMessage(message)}
+              </button>
+            ))}
+            {globalResults.files.slice(0, 4).map((message) => (
+              <button key={message.id} className="result-item" onClick={() => setSelectedId(message.conversationId)}>
+                {message.mediaMime ?? "Shared file"} · {formatBytes(message.mediaSize)}
+              </button>
+            ))}
+          </section>
+        )}
+
+        {results.length > 0 && (
+          <section className="panel">
+            <h3>People</h3>
+            {results.map((user) => (
+              <UserRow key={user.id} user={user} action={<button className="icon-button" onClick={() => addFriend(user.id)}><UserPlus size={17} /></button>} />
+            ))}
+          </section>
+        )}
+
+        {requests.length > 0 && (
+          <section className="panel">
+            <h3>Requests</h3>
+            {requests.map((request) => (
+              <UserRow
+                key={request.id}
+                user={request.user}
+                action={
+                  <div className="inline-actions">
+                    <button className="icon-button success" onClick={() => acceptRequest(request.id)}><Check size={17} /></button>
+                    <button className="icon-button danger" onClick={() => declineRequest(request.id)}><X size={17} /></button>
+                  </div>
+                }
+              />
+            ))}
+          </section>
+        )}
+
+        <section className="panel conversations">
+          <h3>Messages</h3>
+          {conversations.length === 0 && <p className="empty">Add a friend to open your first private chat.</p>}
+          {conversations.map((conversation) => {
+            const other = conversation.members.find((member) => member.id !== session.user.id) ?? conversation.members[0];
+            const title = conversationTitle(conversation, session.user.id);
+            return (
+              <button
+                key={conversation.id}
+                className={`conversation-item ${conversation.id === selected?.id ? "active" : ""}`}
+                onClick={() => setSelectedId(conversation.id)}
+              >
+                {conversation.type === "DIRECT" ? <Avatar user={other} /> : <div className="avatar placeholder">{conversation.type === "CHANNEL" ? <Hash size={18} /> : <Users size={18} />}</div>}
+                <span>
+                  <strong>{title}</strong>
+                  <small>{conversation.lastMessage ? previewMessage(conversation.lastMessage) : "Say hello"}</small>
+                </span>
+              </button>
+            );
+          })}
+        </section>
+
+        {notifications.length > 0 && (
+          <section className="panel notifications">
+            <h3>Notifications {unread > 0 ? `(${unread})` : ""}</h3>
+            {notifications.slice(0, 6).map((notification) => (
+              <button key={notification.id} className={`notification ${notification.readAt ? "" : "unread"}`} onClick={() => openNotification(notification)}>
+                <strong>{notification.title}</strong>
+                <span>{notification.body}</span>
+              </button>
+            ))}
+          </section>
+        )}
+
+        <section className="panel friends">
+          <h3>Friends</h3>
+          {friends.map((friend) => <UserRow key={friend.id} user={friend} />)}
+        </section>
+      </aside>
+
+      <section className="chat">
+        <header className="chat-header">
+          <button className="icon-button mobile-menu" onClick={() => setMobileListOpen(true)}>
+            <Menu size={20} />
+          </button>
+          {peer ? (
+            <div className="identity">
+              {selected?.type === "DIRECT" ? <Avatar user={peer} /> : <div className="avatar placeholder">{selected?.type === "CHANNEL" ? <Hash size={18} /> : <Users size={18} />}</div>}
+              <div>
+                <strong>{selectedTitle}</strong>
+                <span>
+                  {selected?.type === "DIRECT" ? `@${peer.username}` : `${selected?.members.length ?? 0} members`}
+                  <EncryptionBadge conversation={selected} />
+                </span>
+              </div>
+            </div>
+          ) : (
+            <div className="identity">
+              <div className="avatar placeholder"><MessageCircle size={18} /></div>
+              <div>
+                <strong>No conversation selected</strong>
+                <span>Search for a friend to begin</span>
+              </div>
+            </div>
+          )}
+          <div className="chat-tools">
+            <button className="icon-button" title="Media gallery" onClick={() => setGalleryOpen(true)}><Images size={18} /></button>
+            <CallButtons selected={selected} peer={peer} />
+            <button className="icon-button" title="Call history" onClick={() => setCallHistoryOpen(true)}><PhoneCall size={18} /></button>
+            <button className="icon-button" title="Notifications"><Bell size={18} /></button>
+          </div>
+        </header>
+
+        <MessageList
+          messages={messages}
+          currentUserId={session.user.id}
+          token={session.token}
+          conversation={selected}
+        />
+
+        {selected && (
+          <Composer
+            token={session.token}
+            conversation={selected}
+            onSent={(message) => {
+              if (!message.deliveredAt) return;
+              setMessages((current) => (current.some((item) => item.id === message.id) ? current : [...current, message]));
+            }}
+          />
+        )}
+      </section>
+
+      {profileOpen && (
+        <ProfileDialog
+          session={session}
+          onClose={() => setProfileOpen(false)}
+          onSave={(user) => setSession((current) => (current ? { ...current, user } : current))}
+        />
+      )}
+      {createOpen && <CreateConversationDialog friends={friends} onClose={() => setCreateOpen(false)} onCreate={createConversation} />}
+      {galleryOpen && selected && <GalleryDialog token={session.token} conversation={selected} onClose={() => setGalleryOpen(false)} />}
+      {callHistoryOpen && (
+        <CallHistoryDialog token={session.token} currentUserId={session.user.id} conversationId={selected?.id} onClose={() => setCallHistoryOpen(false)} />
+      )}
+    </main>
+    </EncryptionProvider>
+    </CallProvider>
+  );
+}
+
+function CallButtons({ selected, peer }: { selected?: Conversation; peer?: User }) {
+  const { startCall, inCall } = useCall();
+  if (!selected || selected.type !== "DIRECT" || !peer) return null;
+  return (
+    <>
+      <button className="icon-button" disabled={inCall} title="Voice call" onClick={() => startCall(selected.id, "AUDIO", peer)}>
+        <Phone size={18} />
+      </button>
+      <button className="icon-button" disabled={inCall} title="Video call" onClick={() => startCall(selected.id, "VIDEO", peer)}>
+        <Video size={18} />
+      </button>
+    </>
+  );
+}
+
+function CallHistoryDialog({
+  token,
+  currentUserId,
+  conversationId,
+  onClose
+}: {
+  token: string;
+  currentUserId: string;
+  conversationId?: string;
+  onClose: () => void;
+}) {
+  const [calls, setCalls] = useState<CallRecord[]>([]);
+  const [stats, setStats] = useState<CallStats | null>(null);
+  const [scope, setScope] = useState<"chat" | "all">(conversationId ? "chat" : "all");
+
+  useEffect(() => {
+    void api.callHistory(token, scope === "chat" ? conversationId : undefined).then(({ calls }) => setCalls(calls));
+    void api.callStats(token).then(setStats);
+  }, [token, scope, conversationId]);
+
+  return (
+    <div className="dialog-backdrop">
+      <section className="dialog call-history-dialog">
+        <div className="dialog-head">
+          <h2>Call history</h2>
+          <button type="button" className="icon-button" onClick={onClose}><X size={18} /></button>
+        </div>
+        {stats && (
+          <div className="call-stats">
+            <div><strong>{stats.completed}</strong><span>completed</span></div>
+            <div><strong>{stats.missed}</strong><span>missed</span></div>
+            <div><strong>{stats.video}</strong><span>video</span></div>
+            <div><strong>{formatCallDuration(stats.totalDurationSec)}</strong><span>total time</span></div>
+          </div>
+        )}
+        {conversationId && (
+          <div className="segmented">
+            <button type="button" className={scope === "chat" ? "active" : ""} onClick={() => setScope("chat")}>This chat</button>
+            <button type="button" className={scope === "all" ? "active" : ""} onClick={() => setScope("all")}>All calls</button>
+          </div>
+        )}
+        <div className="call-history-list">
+          {calls.length === 0 && <p className="empty">No calls yet.</p>}
+          {calls.map((call) => {
+            const outgoing = call.callerId === currentUserId;
+            const missed = call.status === "MISSED" || call.status === "DECLINED";
+            return (
+              <div key={call.id} className={`call-history-item ${missed ? "missed" : ""}`}>
+                <span className={`call-icon ${outgoing ? "out" : "in"}`}>
+                  {call.type === "VIDEO" ? <Video size={16} /> : <Phone size={16} />}
+                </span>
+                <div className="call-history-meta">
+                  <strong>{call.caller.displayName}</strong>
+                  <small>
+                    {outgoing ? "Outgoing" : "Incoming"} · {callStatusLabel(call.status)}
+                    {call.status === "ENDED" ? ` · ${formatCallDuration(call.durationSec)}` : ""}
+                  </small>
+                </div>
+                <time>{new Date(call.startedAt).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</time>
+                {call.recordingUrl && (
+                  <a className="icon-button" href={api.mediaUrl(call.recordingUrl)} target="_blank" rel="noreferrer" title="Recording">
+                    <Download size={16} />
+                  </a>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function callStatusLabel(status: CallRecord["status"]) {
+  switch (status) {
+    case "ENDED":
+      return "Answered";
+    case "MISSED":
+      return "Missed";
+    case "DECLINED":
+      return "Declined";
+    case "ONGOING":
+      return "Ongoing";
+    default:
+      return "Ringing";
+  }
+}
+
+function formatCallDuration(totalSeconds: number) {
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) return `${minutes}m ${seconds}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+
+function EncryptionProvider({ token, user, children }: { token: string; user: User; children: React.ReactNode }) {
+  const [ready, setReady] = useState(false);
+  const [needsUnlock, setNeedsUnlock] = useState(false);
+  const privateKeyRef = useRef<CryptoKey | null>(null);
+  const keyCacheRef = useRef<Map<string, CryptoKey>>(new Map());
+
+  useEffect(() => {
+    let active = true;
+    keyCacheRef.current.clear();
+    privateKeyRef.current = null;
+    setReady(false);
+    setNeedsUnlock(false);
+    loadLocalPrivateKey(user.id)
+      .then((key) => {
+        if (!active) return;
+        if (key) {
+          privateKeyRef.current = key;
+          setReady(true);
+        } else {
+          setNeedsUnlock(true);
+        }
+      })
+      .catch(() => active && setNeedsUnlock(true));
+    return () => {
+      active = false;
+    };
+  }, [user.id]);
+
+  const getConversationKey = useCallback(
+    async (conversation: Conversation) => {
+      const cached = keyCacheRef.current.get(conversation.id);
+      if (cached) return cached;
+      const peer = peerWithKey(conversation, user.id);
+      if (!peer?.publicKey || !privateKeyRef.current) return null;
+      const key = await deriveConversationKey(privateKeyRef.current, peer.publicKey);
+      keyCacheRef.current.set(conversation.id, key);
+      return key;
+    },
+    [user.id]
+  );
+
+  const canEncrypt = useCallback(
+    (conversation?: Conversation | null) => Boolean(ready && conversation && peerWithKey(conversation, user.id)),
+    [ready, user.id]
+  );
+
+  const encryptForConversation = useCallback(
+    async (conversation: Conversation, text: string) => {
+      const key = ready ? await getConversationKey(conversation) : null;
+      if (!key) return { body: text, encrypted: false };
+      return { body: await encryptText(key, text), encrypted: true };
+    },
+    [ready, getConversationKey]
+  );
+
+  const decryptForConversation = useCallback(
+    async (conversation: Conversation, message: Message) => {
+      if (!message.encrypted) return message.body;
+      const key = await getConversationKey(conversation);
+      if (!key) return null;
+      try {
+        return await decryptText(key, message.body);
+      } catch {
+        return null;
+      }
+    },
+    [getConversationKey]
+  );
+
+  async function unlock(password: string) {
+    const key = await setupKeys(token, user.id, password);
+    privateKeyRef.current = key;
+    keyCacheRef.current.clear();
+    setReady(true);
+    setNeedsUnlock(false);
+  }
+
+  const value = useMemo<EncryptionController>(
+    () => ({ ready, canEncrypt, encryptForConversation, decryptForConversation }),
+    [ready, canEncrypt, encryptForConversation, decryptForConversation]
+  );
+
+  return (
+    <EncryptionContext.Provider value={value}>
+      {children}
+      {needsUnlock && <UnlockDialog onUnlock={unlock} onSkip={() => setNeedsUnlock(false)} />}
+    </EncryptionContext.Provider>
+  );
+}
+
+function UnlockDialog({ onUnlock, onSkip }: { onUnlock: (password: string) => Promise<void>; onSkip: () => void }) {
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      await onUnlock(password);
+    } catch (err) {
+      setError(err instanceof WrongPasswordError ? "Incorrect password" : err instanceof Error ? err.message : "Unable to unlock");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="dialog-backdrop">
+      <form className="dialog" onSubmit={submit}>
+        <div className="dialog-head">
+          <h2><Lock size={18} /> Unlock encryption</h2>
+        </div>
+        <p className="muted">
+          Enter your password to restore your private key on this device and read encrypted messages. Your password is used locally and never sent in plain text.
+        </p>
+        <label>
+          Password
+          <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" autoFocus />
+        </label>
+        {error && <p className="error">{error}</p>}
+        <button className="primary-button" disabled={loading || !password}>{loading ? "Unlocking..." : "Unlock"}</button>
+        <button type="button" className="link-button" onClick={onSkip}>Skip for now</button>
+      </form>
+    </div>
+  );
+}
+
+function DecryptedBody({ conversation, message }: { conversation: Conversation; message: Message }) {
+  const { ready, decryptForConversation } = useEncryption();
+  const [text, setText] = useState<string | null>(message.encrypted ? null : message.body);
+
+  useEffect(() => {
+    let active = true;
+    if (!message.encrypted) {
+      setText(message.body);
+      return;
+    }
+    void decryptForConversation(conversation, message).then((value) => {
+      if (active) setText(value);
+    });
+    return () => {
+      active = false;
+    };
+  }, [message.id, message.body, message.encrypted, conversation, decryptForConversation, ready]);
+
+  if (message.encrypted && text === null) {
+    return (
+      <p className="locked-message">
+        <Lock size={13} /> Encrypted message
+      </p>
+    );
+  }
+  return text ? <p>{text}</p> : null;
+}
+
+function EncryptionBadge({ conversation }: { conversation?: Conversation | null }) {
+  const { canEncrypt } = useEncryption();
+  if (!canEncrypt(conversation)) return null;
+  return (
+    <span className="encryption-badge" title="Messages in this chat are end-to-end encrypted">
+      <Lock size={12} /> Encrypted
+    </span>
+  );
+}
+
+function MessageList({
+  messages,
+  currentUserId,
+  token,
+  conversation
+}: {
+  messages: Message[];
+  currentUserId: string;
+  token: string;
+  conversation?: Conversation;
+}) {
+  const { encryptForConversation, decryptForConversation } = useEncryption();
+  const conversationId = conversation?.id ?? "";
+  const others = (conversation?.members ?? []).filter((member) => member.id !== currentUserId);
+  const lastMineId = [...messages].reverse().find((message) => message.senderId === currentUserId && !message.deletedAt)?.id;
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+  const atBottomRef = useRef(true);
+  const [showJump, setShowJump] = useState(false);
+  const [editingId, setEditingId] = useState("");
+  const [draft, setDraft] = useState("");
+
+  const isNearBottom = useCallback(() => {
+    const node = listRef.current;
+    if (!node) return true;
+    return node.scrollHeight - node.scrollTop - node.clientHeight < 120;
+  }, []);
+
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
+    bottomRef.current?.scrollIntoView({ behavior, block: "end" });
+    atBottomRef.current = true;
+    setShowJump(false);
+  }, []);
+
+  const handleScroll = useCallback(() => {
+    const near = isNearBottom();
+    atBottomRef.current = near;
+    setShowJump(!near);
+  }, [isNearBottom]);
+
+  // Jump straight to the latest message when switching conversations.
+  useEffect(() => {
+    scrollToBottom("auto");
+  }, [conversationId, scrollToBottom]);
+
+  // Only auto-follow new messages if the user is already reading the bottom,
+  // so scrolling up to older messages is never interrupted.
+  useEffect(() => {
+    if (atBottomRef.current) {
+      scrollToBottom();
+      const handles = [120, 420].map((delay) => window.setTimeout(() => scrollToBottom("auto"), delay));
+      return () => handles.forEach(window.clearTimeout);
+    }
+    setShowJump(true);
+  }, [messages.length, scrollToBottom]);
+
+  async function startEdit(message: Message) {
+    const text = conversation ? await decryptForConversation(conversation, message) : message.body;
+    setEditingId(message.id);
+    setDraft(text ?? message.body);
+  }
+
+  async function submitEdit(message: Message) {
+    let body = draft.trim();
+    if (!body) return;
+    if (conversation && message.encrypted) {
+      const result = await encryptForConversation(conversation, body);
+      if (!result.encrypted) return; // refuse to downgrade an encrypted message to plaintext
+      body = result.body;
+    }
+    await api.editMessage(token, conversationId, message.id, body);
+    setEditingId("");
+  }
+
+  if (messages.length === 0) {
+    return (
+      <div className="message-list empty-chat">
+        <MessageCircle size={42} />
+        <h2>Start the conversation</h2>
+        <p>Send text, images, video clips, or a voice note.</p>
+      </div>
+    );
+  }
+
+  return (
+    <>
+    <div className="message-list" ref={listRef} onScroll={handleScroll}>
+      {messages.map((message) => {
+        const mine = message.senderId === currentUserId;
+        const reactionCounts = aggregateReactions(message);
+        return (
+          <article key={message.id} className={`message ${mine ? "mine" : ""}`}>
+            {!mine && <Avatar user={message.sender} />}
+            <div className="bubble">
+              {message.deletedAt ? (
+                <p className="muted">Message deleted</p>
+              ) : (
+                <>
+                  <Media message={message} onReady={scrollToBottom} />
+                  {editingId === message.id ? (
+                    <form
+                      className="edit-row"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        void submitEdit(message);
+                      }}
+                    >
+                      <input value={draft} onChange={(event) => setDraft(event.target.value)} />
+                      <button className="icon-button"><Check size={16} /></button>
+                    </form>
+                  ) : conversation ? (
+                    <DecryptedBody conversation={conversation} message={message} />
+                  ) : (
+                    message.body && <p>{message.body}</p>
+                  )}
+                </>
+              )}
+              {reactionCounts.length > 0 && (
+                <div className="reactions">
+                  {reactionCounts.map(([emoji, count]) => (
+                    <button key={emoji} onClick={() => void api.removeReaction(token, conversationId, message.id, emoji)}>
+                      {emoji} {count}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div className="message-meta">
+                <time>{new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>
+                {message.editedAt && <span>edited</span>}
+                {message.scheduledFor && !message.deliveredAt && <span>scheduled</span>}
+                {mine && !message.deletedAt && message.deliveredAt && (
+                  <Receipt status={receiptStatus(message, others)} showLabel={message.id === lastMineId} />
+                )}
+              </div>
+              {!message.deletedAt && (
+                <div className="message-actions">
+                  {["👍", "❤️", "😂"].map((emoji) => (
+                    <button key={emoji} onClick={() => void api.react(token, conversationId, message.id, emoji)} title={`React ${emoji}`}>
+                      {emoji}
+                    </button>
+                  ))}
+                  {mine && message.type === "TEXT" && (
+                    <button onClick={() => void startEdit(message)} title="Edit">
+                      <Pencil size={14} />
+                    </button>
+                  )}
+                  {mine && (
+                    <button onClick={() => void api.deleteMessage(token, conversationId, message.id)} title="Delete">
+                      <Trash2 size={14} />
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          </article>
+        );
+      })}
+      <div ref={bottomRef} />
+      </div>
+      {showJump && (
+        <button className="jump-latest" onClick={() => scrollToBottom()} title="Jump to latest">
+          <ChevronDown size={20} />
+        </button>
+      )}
+    </>
+  );
+}
+
+type ReceiptState = "sent" | "delivered" | "seen";
+
+function receiptStatus(message: Message, others: User[]): ReceiptState {
+  if (others.length === 0) return "sent";
+  const created = new Date(message.createdAt).getTime();
+  const seen = others.every((member) => member.lastReadAt && new Date(member.lastReadAt).getTime() >= created);
+  if (seen) return "seen";
+  const delivered = others.every((member) => member.lastDeliveredAt && new Date(member.lastDeliveredAt).getTime() >= created);
+  if (delivered) return "delivered";
+  return "sent";
+}
+
+function Receipt({ status, showLabel }: { status: ReceiptState; showLabel: boolean }) {
+  const label = status === "seen" ? "Seen" : status === "delivered" ? "Delivered" : "Sent";
+  return (
+    <span className={`receipt ${status}`} title={label}>
+      {status === "sent" ? <Check size={13} /> : <CheckCheck size={13} />}
+      {showLabel && <span className="receipt-label">{label}</span>}
+    </span>
+  );
+}
+
+function Media({ message, onReady }: { message: Message; onReady?: () => void }) {
+  if (!message.mediaUrl) return null;
+  const source = api.mediaUrl(message.mediaUrl);
+  if (message.type === "IMAGE") return <img className="media image" src={source} alt="" onLoad={onReady} />;
+  if (message.type === "VIDEO") return <video className="media video" src={source} controls onLoadedMetadata={onReady} />;
+  if (message.type === "VOICE") return <audio className="media audio" src={source} controls onLoadedMetadata={onReady} />;
+  return null;
+}
+
+function Composer({
+  token,
+  conversation,
+  onSent
+}: {
+  token: string;
+  conversation: Conversation;
+  onSent: (message: Message) => void;
+}) {
+  const { encryptForConversation } = useEncryption();
+  const conversationId = conversation.id;
+  const [body, setBody] = useState("");
+  const [scheduledFor, setScheduledFor] = useState("");
+  const [recording, setRecording] = useState(false);
+  const [recordingError, setRecordingError] = useState("");
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const chunksRef = useRef<BlobPart[]>([]);
+
+  useEffect(() => {
+    return () => {
+      if (recorderRef.current?.state === "recording") recorderRef.current.stop();
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+    };
+  }, []);
+
+  async function sendText(event: React.FormEvent) {
+    event.preventDefault();
+    const text = body.trim();
+    if (!text) return;
+    const { body: payload, encrypted } = await encryptForConversation(conversation, text);
+    const { message } = await api.sendMessage(
+      token,
+      conversationId,
+      payload,
+      scheduledFor ? new Date(scheduledFor).toISOString() : undefined,
+      encrypted
+    );
+    onSent(message);
+    setBody("");
+    setScheduledFor("");
+  }
+
+  async function sendFile(file: File | undefined) {
+    if (!file) return;
+    const { message } = await api.sendMedia(token, conversationId, file, body.trim(), scheduledFor ? new Date(scheduledFor).toISOString() : undefined);
+    onSent(message);
+    setBody("");
+    setScheduledFor("");
+    if (fileRef.current) fileRef.current.value = "";
+  }
+
+  async function toggleRecording() {
+    if (recording) {
+      recorderRef.current?.stop();
+      return;
+    }
+
+    try {
+      setRecordingError("");
+      if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+        setRecordingError("Voice recording is not supported in this browser.");
+        return;
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      streamRef.current = stream;
+      recorderRef.current = recorder;
+      chunksRef.current = [];
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) chunksRef.current.push(event.data);
+      };
+
+      recorder.onstop = () => {
+        const mimeType = recorder.mimeType || "audio/webm";
+        const blob = new Blob(chunksRef.current, { type: mimeType });
+        const extension = mimeType.includes("mp4") ? "m4a" : "webm";
+        const voiceNote = new File([blob], `voice-note-${Date.now()}.${extension}`, { type: mimeType });
+        streamRef.current?.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+        recorderRef.current = null;
+        chunksRef.current = [];
+        setRecording(false);
+        if (blob.size > 0) void sendFile(voiceNote);
+      };
+
+      recorder.start();
+      setRecording(true);
+    } catch {
+      setRecording(false);
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      setRecordingError("Microphone permission was blocked.");
+    }
+  }
+
+  return (
+    <form className="composer" onSubmit={sendText}>
+      <input ref={fileRef} type="file" accept="image/*,video/*,audio/*" hidden onChange={(event) => void sendFile(event.target.files?.[0])} />
+      <button type="button" className="icon-button" onClick={() => fileRef.current?.click()} title="Attach media">
+        <Paperclip size={19} />
+      </button>
+      <button type="button" className={`icon-button ${recording ? "recording" : ""}`} onClick={() => void toggleRecording()} title={recording ? "Stop recording" : "Record voice note"}>
+        <Mic size={19} />
+      </button>
+      {recording && <span className="recording-pill">Recording</span>}
+      {recordingError && <span className="composer-error">{recordingError}</span>}
+      <label className="schedule-control" title="Schedule delivery">
+        <CalendarClock size={18} />
+        <input type="datetime-local" value={scheduledFor} onChange={(event) => setScheduledFor(event.target.value)} />
+      </label>
+      <input value={body} onChange={(event) => setBody(event.target.value)} placeholder="Message privately" />
+      <button className="send-button" disabled={!body.trim()}>
+        <Send size={18} />
+      </button>
+    </form>
+  );
+}
+
+function ProfileDialog({
+  session,
+  onClose,
+  onSave
+}: {
+  session: Session;
+  onClose: () => void;
+  onSave: (user: User) => void;
+}) {
+  const [displayName, setDisplayName] = useState(session.user.displayName);
+  const [bio, setBio] = useState(session.user.bio);
+  const [avatarUrl, setAvatarUrl] = useState(session.user.avatarUrl ?? "");
+
+  async function save(event: React.FormEvent) {
+    event.preventDefault();
+    const { user } = await api.updateProfile(session.token, { displayName, bio, avatarUrl });
+    onSave(user);
+    onClose();
+  }
+
+  return (
+    <div className="dialog-backdrop">
+      <form className="dialog" onSubmit={save}>
+        <div className="dialog-head">
+          <h2>Profile</h2>
+          <button type="button" className="icon-button" onClick={onClose}><X size={18} /></button>
+        </div>
+        <label>
+          Display name
+          <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
+        </label>
+        <label>
+          Bio
+          <textarea value={bio} onChange={(event) => setBio(event.target.value)} maxLength={180} />
+        </label>
+        <label>
+          Avatar URL
+          <input value={avatarUrl} onChange={(event) => setAvatarUrl(event.target.value)} />
+        </label>
+        <button className="primary-button">Save profile</button>
+      </form>
+    </div>
+  );
+}
+
+function CreateConversationDialog({
+  friends,
+  onClose,
+  onCreate
+}: {
+  friends: User[];
+  onClose: () => void;
+  onCreate: (input: { type: "GROUP" | "CHANNEL"; name: string; description: string; memberIds: string[] }) => Promise<void>;
+}) {
+  const [type, setType] = useState<"GROUP" | "CHANNEL">("GROUP");
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [memberIds, setMemberIds] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setLoading(true);
+    await onCreate({ type, name, description, memberIds });
+    setLoading(false);
+  }
+
+  return (
+    <div className="dialog-backdrop">
+      <form className="dialog" onSubmit={submit}>
+        <div className="dialog-head">
+          <h2>Create space</h2>
+          <button type="button" className="icon-button" onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="segmented">
+          <button type="button" className={type === "GROUP" ? "active" : ""} onClick={() => setType("GROUP")}>
+            Group
+          </button>
+          <button type="button" className={type === "CHANNEL" ? "active" : ""} onClick={() => setType("CHANNEL")}>
+            Channel
+          </button>
+        </div>
+        <label>
+          Name
+          <input value={name} onChange={(event) => setName(event.target.value)} minLength={2} maxLength={80} required />
+        </label>
+        <label>
+          Description
+          <textarea value={description} onChange={(event) => setDescription(event.target.value)} maxLength={240} />
+        </label>
+        <div className="member-picker">
+          {friends.map((friend) => (
+            <label key={friend.id} className="check-row">
+              <input
+                type="checkbox"
+                checked={memberIds.includes(friend.id)}
+                onChange={(event) =>
+                  setMemberIds((current) => event.target.checked ? [...current, friend.id] : current.filter((id) => id !== friend.id))
+                }
+              />
+              <Avatar user={friend} />
+              <span>{friend.displayName}</span>
+            </label>
+          ))}
+        </div>
+        <button className="primary-button" disabled={loading}>{loading ? "Creating..." : "Create"}</button>
+      </form>
+    </div>
+  );
+}
+
+function GalleryDialog({ token, conversation, onClose }: { token: string; conversation: Conversation; onClose: () => void }) {
+  const [media, setMedia] = useState<Message[]>([]);
+  const [filter, setFilter] = useState<"ALL" | "IMAGE" | "VIDEO" | "VOICE">("ALL");
+
+  useEffect(() => {
+    void api.mediaGallery(token, conversation.id).then(({ media }) => setMedia(media));
+  }, [conversation.id, token]);
+
+  const filtered = filter === "ALL" ? media : media.filter((message) => message.type === filter);
+
+  return (
+    <div className="dialog-backdrop">
+      <section className="dialog gallery-dialog">
+        <div className="dialog-head">
+          <h2>Media gallery</h2>
+          <button type="button" className="icon-button" onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="segmented four">
+          {(["ALL", "IMAGE", "VIDEO", "VOICE"] as const).map((item) => (
+            <button key={item} type="button" className={filter === item ? "active" : ""} onClick={() => setFilter(item)}>
+              {item.toLowerCase()}
+            </button>
+          ))}
+        </div>
+        <div className="gallery-grid">
+          {filtered.map((message) => (
+            <a key={message.id} className="gallery-item" href={api.mediaUrl(message.originalMediaUrl ?? message.mediaUrl)} target="_blank" rel="noreferrer">
+              {message.type === "IMAGE" && <img src={api.mediaUrl(message.mediaUrl)} alt="" />}
+              {message.type === "VIDEO" && <video src={api.mediaUrl(message.mediaUrl)} />}
+              {message.type === "VOICE" && <Mic size={28} />}
+              <span><Download size={14} /> {formatBytes(message.mediaSize)}</span>
+            </a>
+          ))}
+          {filtered.length === 0 && <p className="empty">No media shared here yet.</p>}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function Avatar({ user }: { user: User }) {
+  const initials = useMemo(
+    () =>
+      user.displayName
+        .split(" ")
+        .map((part) => part[0])
+        .join("")
+        .slice(0, 2)
+        .toUpperCase(),
+    [user.displayName]
+  );
+  return user.avatarUrl ? <img className="avatar" src={user.avatarUrl} alt="" /> : <div className="avatar">{initials}</div>;
+}
+
+function UserRow({ user, action }: { user: User; action?: React.ReactNode }) {
+  return (
+    <div className="user-row">
+      <Avatar user={user} />
+      <span>
+        <strong>{user.displayName}</strong>
+        <small>@{user.username}</small>
+      </span>
+      {action}
+    </div>
+  );
+}
+
+function previewMessage(message: Message) {
+  if (message.deletedAt) return "Message deleted";
+  if (message.encrypted) return "🔒 Encrypted message";
+  if (message.type === "IMAGE") return "Photo";
+  if (message.type === "VIDEO") return "Video";
+  if (message.type === "VOICE") return "Voice note";
+  return message.body;
+}
+
+function conversationTitle(conversation: Conversation, currentUserId: string) {
+  if (conversation.type !== "DIRECT") return conversation.name ?? "Untitled";
+  return conversation.members.find((member) => member.id !== currentUserId)?.displayName ?? conversation.members[0]?.displayName ?? "Private chat";
+}
+
+function aggregateReactions(message: Message) {
+  const counts = new Map<string, number>();
+  for (const reaction of message.reactions ?? []) {
+    counts.set(reaction.emoji, (counts.get(reaction.emoji) ?? 0) + 1);
+  }
+  return Array.from(counts.entries());
+}
+
+function formatBytes(bytes: number | null) {
+  if (!bytes) return "";
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}

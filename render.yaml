@@ -1,0 +1,59 @@
+# Free deployment blueprint for Render (https://render.com).
+#
+# This defines two free services:
+#   - nexus-api : the Node/Socket.IO backend (Docker), runs DB migrations on boot
+#   - nexus-web : the static React frontend (global CDN, free SSL)
+#
+# The database is NOT defined here — use a free Neon Postgres (neon.tech) and
+# paste its connection string into DATABASE_URL. See docs/FREE_HOSTING.md.
+#
+# After the first deploy, set the cross-URLs (they're left manual because the
+# public URLs only exist once the services are created):
+#   nexus-web : VITE_API_URL + VITE_SOCKET_URL = the nexus-api URL
+#   nexus-api : CLIENT_ORIGIN = the nexus-web URL
+# then trigger a redeploy of both.
+
+services:
+  - type: web
+    name: nexus-api
+    runtime: docker
+    dockerfilePath: ./apps/api/Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        sync: false # paste your Neon connection string (include ?sslmode=require)
+      - key: JWT_SECRET
+        generateValue: true # Render generates a strong secret for you
+      - key: CLIENT_ORIGIN
+        sync: false # set to the nexus-web URL after first deploy
+      - key: STUN_URLS
+        value: stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302
+      - key: SMTP_HOST
+        sync: false # optional: smtp.gmail.com for real verification emails
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_SECURE
+        value: "false"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+
+  - type: web
+    name: nexus-web
+    runtime: static
+    buildCommand: corepack enable && pnpm install --frozen-lockfile=false && pnpm --filter @nexus/web build
+    staticPublishPath: ./apps/web/dist
+    envVars:
+      - key: VITE_API_URL
+        sync: false # set to the nexus-api URL after first deploy
+      - key: VITE_SOCKET_URL
+        sync: false # same as VITE_API_URL
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

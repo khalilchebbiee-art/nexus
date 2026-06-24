@@ -1,0 +1,64 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-nexus}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nexus_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-nexus}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nexus} -d ${POSTGRES_DB:-nexus}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "5432:5432"
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://nexus:nexus_dev_password@db:5432/nexus?schema=public}
+      JWT_SECRET: ${JWT_SECRET:-replace-this-with-a-long-random-secret}
+      API_PORT: 4000
+      CLIENT_ORIGIN: ${CLIENT_ORIGIN:-http://localhost:5173}
+      MEDIA_STORAGE_PROVIDER: ${MEDIA_STORAGE_PROVIDER:-local}
+      MEDIA_PUBLIC_BASE_URL: ${MEDIA_PUBLIC_BASE_URL:-}
+      STUN_URLS: ${STUN_URLS:-stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302}
+      TURN_URLS: ${TURN_URLS:-}
+      TURN_USERNAME: ${TURN_USERNAME:-}
+      TURN_CREDENTIAL: ${TURN_CREDENTIAL:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-Nexus <no-reply@nexus.local>}
+    volumes:
+      - media-uploads:/app/apps/api/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "4000:4000"
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:4000}
+        VITE_SOCKET_URL: ${VITE_SOCKET_URL:-http://localhost:4000}
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "5173:80"
+
+volumes:
+  postgres-data:
+  media-uploads:

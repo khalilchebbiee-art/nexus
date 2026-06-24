@@ -1,0 +1,233 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum FriendshipStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  BLOCKED
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  VIDEO
+  VOICE
+}
+
+enum ConversationType {
+  DIRECT
+  GROUP
+  CHANNEL
+}
+
+enum ConversationRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum NotificationType {
+  MESSAGE
+  REACTION
+  SCHEDULED
+  SYSTEM
+}
+
+enum CallType {
+  AUDIO
+  VIDEO
+}
+
+enum CallStatus {
+  RINGING
+  ONGOING
+  ENDED
+  MISSED
+  DECLINED
+  FAILED
+}
+
+model User {
+  id             String       @id @default(cuid())
+  email          String       @unique
+  username       String       @unique
+  displayName    String
+  bio            String       @default("")
+  avatarUrl      String?
+  passwordHash   String
+  // End-to-end encryption identity. The public key is shared; the private key
+  // is only ever stored here wrapped (encrypted) with the user's password, so
+  // the server can never decrypt it.
+  publicKey          String?
+  encryptedPrivateKey String?
+  keySalt            String?
+  keyIv              String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  sentRequests   Friendship[] @relation("requester")
+  receivedRequests Friendship[] @relation("receiver")
+  conversations  ConversationMember[]
+  ownedConversations Conversation[] @relation("conversationOwner")
+  sentMessages   Message[]
+  messageReactions MessageReaction[]
+  notifications  Notification[]
+  initiatedCalls CallSession[]    @relation("callInitiator")
+  callParticipations CallParticipant[]
+}
+
+model Friendship {
+  id          String           @id @default(cuid())
+  requesterId String
+  receiverId  String
+  status      FriendshipStatus @default(PENDING)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  requester   User             @relation("requester", fields: [requesterId], references: [id], onDelete: Cascade)
+  receiver    User             @relation("receiver", fields: [receiverId], references: [id], onDelete: Cascade)
+
+  @@unique([requesterId, receiverId])
+  @@index([receiverId, status])
+}
+
+model Conversation {
+  id        String               @id @default(cuid())
+  type      ConversationType     @default(DIRECT)
+  name      String?
+  description String             @default("")
+  ownerId   String?
+  createdAt DateTime             @default(now())
+  updatedAt DateTime             @updatedAt
+  owner     User?                @relation("conversationOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  members   ConversationMember[]
+  messages  Message[]
+  calls     CallSession[]
+
+  @@index([type, updatedAt])
+}
+
+model ConversationMember {
+  id             String       @id @default(cuid())
+  userId         String
+  conversationId String
+  role           ConversationRole @default(MEMBER)
+  joinedAt       DateTime     @default(now())
+  lastDeliveredAt DateTime?
+  lastReadAt      DateTime?
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, conversationId])
+  @@index([conversationId])
+}
+
+model Message {
+  id             String       @id @default(cuid())
+  conversationId String
+  senderId       String
+  type           MessageType  @default(TEXT)
+  body           String       @default("")
+  mediaUrl       String?
+  originalMediaUrl String?
+  storageProvider String       @default("local")
+  mediaMime      String?
+  mediaSize      Int?
+  editedAt       DateTime?
+  deletedAt      DateTime?
+  scheduledFor   DateTime?
+  // When true, `body` holds an opaque AES-GCM ciphertext envelope the server
+  // cannot read (end-to-end encrypted direct message).
+  encrypted      Boolean      @default(false)
+  deliveredAt    DateTime?    @default(now())
+  createdAt      DateTime     @default(now())
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender         User         @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  reactions      MessageReaction[]
+
+  @@index([conversationId, createdAt])
+  @@index([conversationId, deliveredAt])
+  @@index([scheduledFor, deliveredAt])
+}
+
+model MessageReaction {
+  id        String   @id @default(cuid())
+  messageId String
+  userId    String
+  emoji     String
+  createdAt DateTime @default(now())
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId, emoji])
+  @@index([messageId])
+}
+
+model Notification {
+  id             String           @id @default(cuid())
+  userId         String
+  type           NotificationType
+  title          String
+  body           String
+  conversationId String?
+  messageId      String?
+  readAt         DateTime?
+  createdAt      DateTime         @default(now())
+  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt, createdAt])
+}
+
+model CallSession {
+  id             String        @id @default(cuid())
+  conversationId String
+  callerId       String
+  type           CallType      @default(AUDIO)
+  status         CallStatus    @default(RINGING)
+  startedAt      DateTime      @default(now())
+  answeredAt     DateTime?
+  endedAt        DateTime?
+  durationSec    Int           @default(0)
+  endedReason    String?
+  recordingUrl   String?
+  conversation   Conversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  caller         User          @relation("callInitiator", fields: [callerId], references: [id], onDelete: Cascade)
+  participants   CallParticipant[]
+
+  @@index([conversationId, startedAt])
+  @@index([callerId, startedAt])
+}
+
+model CallParticipant {
+  id        String      @id @default(cuid())
+  callId    String
+  userId    String
+  joinedAt  DateTime?
+  leftAt    DateTime?
+  call      CallSession @relation(fields: [callId], references: [id], onDelete: Cascade)
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([callId, userId])
+  @@index([userId])
+}
+
+// Holds a registration until the emailed code is confirmed. The real User row
+// is only created once the code is verified.
+model PendingRegistration {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  username     String
+  displayName  String
+  passwordHash String
+  codeHash     String
+  attempts     Int      @default(0)
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+
+  @@index([expiresAt])
+}

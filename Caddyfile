@@ -1,0 +1,37 @@
+# Nexus reverse proxy with automatic HTTPS (Let's Encrypt).
+# Replace the two domains below with your real domains, then point both
+# DNS A records at your server's public IP.
+#
+# Caddy obtains and renews TLS certificates automatically and proxies
+# WebSocket (Socket.IO) traffic transparently — nothing extra to configure.
+
+# Frontend (the static React app)
+app.example.com {
+	encode gzip zstd
+
+	# Sensible security headers for the SPA.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(self), microphone=(self), display-capture=(self)"
+		-Server
+	}
+
+	reverse_proxy web:80
+}
+
+# Backend API + Socket.IO + uploaded media
+api.example.com {
+	encode gzip zstd
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
+
+	# Socket.IO and REST both live on the API container.
+	reverse_proxy api:4000
+}
