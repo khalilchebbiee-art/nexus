@@ -5,11 +5,11 @@ import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import { prisma } from "../db.js";
-import { env } from "../env.js";
 import { requireAuth } from "../auth.js";
 import { iceServers } from "../ice.js";
 import { publicUser } from "../utils.js";
 import { extensionForMime } from "../media.js";
+import { persistUpload } from "../storage.js";
 
 const recordingRoot = path.resolve("uploads", "recordings");
 fs.mkdirSync(recordingRoot, { recursive: true });
@@ -110,9 +110,7 @@ export function callsRouter() {
       return;
     }
 
-    const recordingUrl = env.MEDIA_PUBLIC_BASE_URL
-      ? `${env.MEDIA_PUBLIC_BASE_URL.replace(/\/$/, "")}/recordings/${req.file.filename}`
-      : `/uploads/recordings/${req.file.filename}`;
+    const recordingUrl = await persistUpload(req.file, "recordings");
 
     await prisma.callSession.update({ where: { id: call.id }, data: { recordingUrl } });
     res.status(201).json({ recordingUrl });

@@ -8,6 +8,14 @@ const envSchema = z.object({
   CLIENT_ORIGIN: z.string().url().default("http://localhost:5173"),
   MEDIA_STORAGE_PROVIDER: z.enum(["local", "cloud"]).default("local"),
   MEDIA_PUBLIC_BASE_URL: z.string().url().optional(),
+  // Cloudflare R2 (S3-compatible) object storage. When all of these are set and
+  // MEDIA_STORAGE_PROVIDER=cloud, uploads are streamed to R2 instead of the
+  // ephemeral local disk. MEDIA_PUBLIC_BASE_URL should be the bucket's public
+  // URL (R2 public dev URL or a custom domain) so clients can fetch media.
+  R2_ENDPOINT: z.string().url().optional(),
+  R2_ACCESS_KEY_ID: z.string().optional(),
+  R2_SECRET_ACCESS_KEY: z.string().optional(),
+  R2_BUCKET: z.string().optional(),
   // Comma-separated STUN urls. Defaults to Google's public STUN servers.
   STUN_URLS: z.string().default("stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302"),
   // Optional TURN relay for restrictive NATs / China network fallback.

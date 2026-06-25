@@ -16,6 +16,7 @@ import {
 } from "../validators.js";
 import { AppError, handleError, publicUser } from "../utils.js";
 import { extensionForMime } from "../media.js";
+import { persistUpload } from "../storage.js";
 import { onlineUsers } from "../io.js";
 import { FriendshipStatus } from "@prisma/client";
 import type { Server } from "socket.io";
@@ -240,7 +241,7 @@ export function conversationsRouter(io: Server) {
           ? MessageType.VIDEO
           : MessageType.VOICE;
 
-      const mediaUrl = mediaUrlFor(req.file.filename);
+      const mediaUrl = await persistUpload(req.file);
       const conversationId = String(req.params.conversationId);
       const message = await createMessage(conversationId, req.user!.id, {
         type,
@@ -493,11 +494,6 @@ async function notifyMembers(
       messageId: message.id
     }))
   });
-}
-
-function mediaUrlFor(filename: string) {
-  if (env.MEDIA_PUBLIC_BASE_URL) return `${env.MEDIA_PUBLIC_BASE_URL.replace(/\/$/, "")}/${filename}`;
-  return `/uploads/${filename}`;
 }
 
 function serializeConversation(conversation: {
