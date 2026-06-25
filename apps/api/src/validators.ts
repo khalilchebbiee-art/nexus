@@ -31,7 +31,11 @@ export const keyBackupSchema = z.object({
 export const profileSchema = z.object({
   displayName: z.string().min(2).max(60).optional(),
   bio: z.string().max(180).optional(),
-  avatarUrl: z.string().url().max(500).optional().or(z.literal("")),
+  // Absolute http(s) URL, a server-managed upload path (/uploads/...), or empty
+  // (clear). Relative upload paths come from the avatar-upload endpoint.
+  avatarUrl: z
+    .union([z.string().url().max(500), z.string().max(500).startsWith("/uploads/"), z.literal("")])
+    .optional(),
   username: z.string().min(3).max(24).regex(/^[a-zA-Z0-9_]+$/).optional()
 });
 

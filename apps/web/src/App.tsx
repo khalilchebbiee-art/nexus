@@ -2425,7 +2425,9 @@ function ProfileDialog({
       const { user } = await api.updateProfile(session.token, {
         displayName,
         bio,
-        avatarUrl,
+        // Only send the avatar when it actually changed — avoids re-submitting
+        // the server-managed /uploads path set by a photo upload.
+        avatarUrl: avatarUrl !== (session.user.avatarUrl ?? "") ? avatarUrl : undefined,
         username: username !== session.user.username ? username : undefined
       });
       onSave(user);
