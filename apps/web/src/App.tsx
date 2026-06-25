@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import { io, type Socket } from "socket.io-client";
 import {
@@ -39,7 +39,9 @@ import { api, type Session } from "./api";
 import { CallProvider, useCall } from "./call";
 import { decryptText, deriveConversationKey, encryptText, loadLocalPrivateKey, setupKeys, WrongPasswordError } from "./e2ee";
 import { ensureNotificationPermission, playSound, showNotification, unlockAudio } from "./notify";
-import { IslamicPanel } from "./islamic";
+// Code-split: the prayer-times panel pulls in the `adhan` library, which is
+// dead weight for the initial chat load. Loaded lazily in the sidebar.
+const IslamicPanel = lazy(() => import("./islamic").then((m) => ({ default: m.IslamicPanel })));
 import type { CallRecord, CallStats, Conversation, FriendRequest, GlobalSearch, Message, PresenceUpdate, ReceiptUpdate, User } from "./types";
 
 const EMOJIS = ["👍", "❤️", "😂", "🔥", "🥰", "😮", "😢", "😡", "🎉", "👏", "🙏", "💯", "😎", "🤔", "👀", "✅"];
@@ -485,11 +487,24 @@ function Messenger({
       if (message.conversationId === activeConversationRef.current && !mine) {
         socket.emit("conversation:read", message.conversationId);
       }
-      void loadConversations();
+      // Patch the conversation list locally (update preview + move to top)
+      // instead of refetching the whole list on every single message.
+      setConversations((current) => {
+        const index = current.findIndex((c) => c.id === message.conversationId);
+        if (index === -1) {
+          void loadConversations(); // a conversation we don't know about yet
+          return current;
+        }
+        const updated = { ...current[index], lastMessage: message };
+        return [updated, ...current.filter((_, i) => i !== index)];
+      });
     });
     socket.on("message:updated", (message: Message) => {
       setMessages((current) => current.map((item) => (item.id === message.id ? message : item)));
-      void loadConversations();
+      // Only touch the list if the edited/deleted message is the one previewed.
+      setConversations((current) =>
+        current.map((c) => (c.lastMessage?.id === message.id ? { ...c, lastMessage: message } : c))
+      );
     });
     socket.on("presence:update", (p: PresenceUpdate) => applyPresence(p));
     socket.on("friend:request", () => {
@@ -782,7 +797,9 @@ function Messenger({
           })}
         </section>
 
-        <IslamicPanel />
+        <Suspense fallback={null}>
+          <IslamicPanel />
+        </Suspense>
 
         <section className="panel friends">
           <h3>Friends</h3>

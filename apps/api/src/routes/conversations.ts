@@ -14,8 +14,10 @@ import {
   textMessageSchema,
   updateConversationSchema
 } from "../validators.js";
-import { handleError, publicUser } from "../utils.js";
+import { AppError, handleError, publicUser } from "../utils.js";
+import { extensionForMime } from "../media.js";
 import { onlineUsers } from "../io.js";
+import { FriendshipStatus } from "@prisma/client";
 import type { Server } from "socket.io";
 
 const uploadRoot = path.resolve("uploads");
@@ -24,7 +26,10 @@ fs.mkdirSync(uploadRoot, { recursive: true });
 const storage = multer.diskStorage({
   destination: (_req, _file, callback) => callback(null, uploadRoot),
   filename: (_req, file, callback) => {
-    const safeExt = path.extname(file.originalname).toLowerCase().replace(/[^a-z0-9.]/g, "");
+    // Derive the extension from the (allow-listed) mimetype, never from the
+    // client-supplied originalname — otherwise an attacker could upload
+    // `x.html` with an image mimetype and have it served as executable HTML.
+    const safeExt = extensionForMime(file.mimetype);
     callback(null, `${Date.now()}-${crypto.randomUUID()}${safeExt}`);
   }
 });
@@ -63,7 +68,9 @@ export function conversationsRouter(io: Server) {
   router.post("/", async (req, res) => {
     try {
       const input = conversationSchema.parse(req.body);
-      const memberIds = Array.from(new Set([req.user!.id, ...input.memberIds]));
+      // Only the creator's accepted friends may be added — no unconsented adds.
+      const allowed = await acceptedFriendIds(req.user!.id, input.memberIds);
+      const memberIds = Array.from(new Set([req.user!.id, ...allowed]));
       const conversation = await prisma.conversation.create({
         data: {
           type: input.type as ConversationType,
@@ -90,14 +97,15 @@ export function conversationsRouter(io: Server) {
       const conversationId = String(req.params.conversationId);
       await requireManager(req.user!.id, conversationId);
       const input = updateConversationSchema.parse(req.body);
+      const newMemberIds = input.memberIds ? await acceptedFriendIds(req.user!.id, input.memberIds) : undefined;
       const conversation = await prisma.conversation.update({
         where: { id: conversationId },
         data: {
           name: input.name,
           description: input.description,
-          members: input.memberIds
+          members: newMemberIds
             ? {
-                create: input.memberIds.map((userId) => ({
+                create: newMemberIds.map((userId) => ({
                   userId,
                   role: ConversationRole.MEMBER
                 }))
@@ -410,9 +418,9 @@ async function createMessage(
     where: { userId_conversationId: { userId: senderId, conversationId } },
     include: { conversation: true }
   });
-  if (!membership) throw new Error("Conversation unavailable");
+  if (!membership) throw new AppError(403, "Conversation unavailable");
   if (membership.conversation.type === ConversationType.CHANNEL && membership.role === ConversationRole.MEMBER) {
-    throw new Error("Only channel admins can post");
+    throw new AppError(403, "Only channel admins can post");
   }
 
   const scheduled = data.scheduledFor && data.scheduledFor > new Date();
@@ -440,7 +448,23 @@ async function isManager(userId: string, conversationId: string) {
 }
 
 async function requireManager(userId: string, conversationId: string) {
-  if (!(await isManager(userId, conversationId))) throw new Error("Conversation admin access required");
+  if (!(await isManager(userId, conversationId))) throw new AppError(403, "Conversation admin access required");
+}
+
+// Narrows a requested member-id list to the subset that are accepted friends of
+// the actor — prevents adding arbitrary users to a group/channel.
+async function acceptedFriendIds(userId: string, requested: string[]): Promise<string[]> {
+  if (requested.length === 0) return [];
+  const wanted = new Set(requested);
+  const rows = await prisma.friendship.findMany({
+    where: {
+      status: FriendshipStatus.ACCEPTED,
+      OR: [{ requesterId: userId }, { receiverId: userId }]
+    },
+    select: { requesterId: true, receiverId: true }
+  });
+  const friends = new Set(rows.map((r) => (r.requesterId === userId ? r.receiverId : r.requesterId)));
+  return [...wanted].filter((id) => friends.has(id));
 }
 
 async function notifyMembers(

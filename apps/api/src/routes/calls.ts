@@ -9,6 +9,7 @@ import { env } from "../env.js";
 import { requireAuth } from "../auth.js";
 import { iceServers } from "../ice.js";
 import { publicUser } from "../utils.js";
+import { extensionForMime } from "../media.js";
 
 const recordingRoot = path.resolve("uploads", "recordings");
 fs.mkdirSync(recordingRoot, { recursive: true });
@@ -16,7 +17,8 @@ fs.mkdirSync(recordingRoot, { recursive: true });
 const storage = multer.diskStorage({
   destination: (_req, _file, callback) => callback(null, recordingRoot),
   filename: (_req, file, callback) => {
-    const safeExt = path.extname(file.originalname).toLowerCase().replace(/[^a-z0-9.]/g, "") || ".webm";
+    // Server-chosen extension from the mimetype (never the client filename).
+    const safeExt = extensionForMime(file.mimetype);
     callback(null, `${Date.now()}-${crypto.randomUUID()}${safeExt}`);
   }
 });
