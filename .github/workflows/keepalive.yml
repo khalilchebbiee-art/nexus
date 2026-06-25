@@ -1,0 +1,17 @@
+name: Keep Render API awake
+
+# Pings the Render free API every ~10 minutes so it doesn't cold-start
+# (free instances sleep after ~15 min of inactivity).
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {} # lets you run it manually from the Actions tab
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping API health endpoint
+        run: |
+          echo "Pinging Nexus API..."
+          curl -sS -m 40 https://nexus-api-d77a.onrender.com/health || true
