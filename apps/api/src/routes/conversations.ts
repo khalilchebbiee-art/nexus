@@ -17,7 +17,7 @@ import {
   updateConversationSchema
 } from "../validators.js";
 import { AppError, handleError, publicUser } from "../utils.js";
-import { extensionForMime } from "../media.js";
+import { effectiveMime, extensionForMime } from "../media.js";
 import { persistUpload } from "../storage.js";
 import { sendPushToUser } from "../push.js";
 import { onlineUsers, emitToUser } from "../io.js";
@@ -31,10 +31,10 @@ fs.mkdirSync(uploadRoot, { recursive: true });
 const storage = multer.diskStorage({
   destination: (_req, _file, callback) => callback(null, uploadRoot),
   filename: (_req, file, callback) => {
-    // Derive the extension from the (allow-listed) mimetype, never from the
-    // client-supplied originalname — otherwise an attacker could upload
-    // `x.html` with an image mimetype and have it served as executable HTML.
-    const safeExt = extensionForMime(file.mimetype);
+    // Derive the extension from the (allow-listed) effective mimetype, never the
+    // raw client filename — so `x.html` can't be served as executable HTML. The
+    // extension only informs type recovery when the browser mimetype is generic.
+    const safeExt = extensionForMime(effectiveMime(file.originalname, file.mimetype) || file.mimetype);
     callback(null, `${Date.now()}-${crypto.randomUUID()}${safeExt}`);
   }
 });
@@ -49,7 +49,8 @@ const upload = multer({
     const allowed = ["image/", "video/", "audio/"];
     // Reject with an Error (not `false`) so the wrapper can return a clear 415
     // instead of a generic "file required" message.
-    if (allowed.some((prefix) => file.mimetype.startsWith(prefix))) callback(null, true);
+    const mime = effectiveMime(file.originalname, file.mimetype);
+    if (allowed.some((prefix) => mime.startsWith(prefix))) callback(null, true);
     else callback(new Error("UNSUPPORTED_TYPE"));
   }
 });
@@ -312,9 +313,12 @@ export function conversationsRouter(io: Server) {
         caption: req.body.caption,
         scheduledFor: req.body.scheduledFor || undefined
       });
-      const type = req.file.mimetype.startsWith("image/")
+      // Trust the resolved media type (browser mimetype, or filename-inferred
+      // when the browser sent a generic one) for both routing and storage.
+      const mime = effectiveMime(req.file.originalname, req.file.mimetype) || req.file.mimetype;
+      const type = mime.startsWith("image/")
         ? MessageType.IMAGE
-        : req.file.mimetype.startsWith("video/")
+        : mime.startsWith("video/")
           ? MessageType.VIDEO
           : MessageType.VOICE;
 
@@ -325,7 +329,7 @@ export function conversationsRouter(io: Server) {
         body: input.caption ?? "",
         mediaUrl,
         originalMediaUrl: mediaUrl,
-        mediaMime: req.file.mimetype,
+        mediaMime: mime,
         mediaSize: req.file.size,
         scheduledFor: input.scheduledFor ? new Date(input.scheduledFor) : undefined
       });
