@@ -1269,6 +1269,7 @@ function MessageList({
   const [editingId, setEditingId] = useState("");
   const [draft, setDraft] = useState("");
   const [reactPicker, setReactPicker] = useState("");
+  const [lightbox, setLightbox] = useState<string | null>(null);
 
   const isNearBottom = useCallback(() => {
     const node = listRef.current;
@@ -1368,7 +1369,7 @@ function MessageList({
                 <p className="muted">Message deleted</p>
               ) : (
                 <>
-                  <Media message={message} onReady={scrollToBottom} />
+                  <Media message={message} onReady={scrollToBottom} onZoom={setLightbox} />
                   {editingId === message.id ? (
                     <form
                       className="edit-row"
@@ -1458,6 +1459,7 @@ function MessageList({
           <ChevronDown size={20} />
         </button>
       )}
+      {lightbox && <Lightbox src={lightbox} onClose={() => setLightbox(null)} />}
     </>
   );
 }
@@ -1484,13 +1486,50 @@ function Receipt({ status, showLabel }: { status: ReceiptState; showLabel: boole
   );
 }
 
-function Media({ message, onReady }: { message: Message; onReady?: () => void }) {
+function Media({ message, onReady, onZoom }: { message: Message; onReady?: () => void; onZoom?: (src: string) => void }) {
+  const [failed, setFailed] = useState(false);
   if (!message.mediaUrl) return null;
   const source = api.mediaUrl(message.mediaUrl);
-  if (message.type === "IMAGE") return <img className="media image" src={source} alt="" onLoad={onReady} />;
-  if (message.type === "VIDEO") return <video className="media video" src={source} controls onLoadedMetadata={onReady} />;
-  if (message.type === "VOICE") return <audio className="media audio" src={source} controls onLoadedMetadata={onReady} />;
+  // Older media stored on the (ephemeral) local disk may have been wiped by a
+  // redeploy — show a clear placeholder instead of a broken-image icon.
+  if (failed) {
+    return (
+      <div className="media media-unavailable">
+        <Images size={20} /> Media unavailable
+      </div>
+    );
+  }
+  if (message.type === "IMAGE")
+    return (
+      <img
+        className="media image"
+        src={source}
+        alt=""
+        loading="lazy"
+        onLoad={onReady}
+        onError={() => setFailed(true)}
+        onClick={() => onZoom?.(source)}
+      />
+    );
+  if (message.type === "VIDEO") return <video className="media video" src={source} controls onLoadedMetadata={onReady} onError={() => setFailed(true)} />;
+  if (message.type === "VOICE") return <audio className="media audio" src={source} controls onLoadedMetadata={onReady} onError={() => setFailed(true)} />;
   return null;
+}
+
+function Lightbox({ src, onClose }: { src: string; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return (
+    <div className="lightbox" onClick={onClose} role="dialog" aria-modal="true">
+      <button className="lightbox-close" onClick={onClose} aria-label="Close"><X size={24} /></button>
+      <img src={src} alt="" onClick={(event) => event.stopPropagation()} />
+    </div>
+  );
 }
 
 function Composer({
@@ -1701,15 +1740,20 @@ function Composer({
 function CameraDialog({ onClose, onCapture }: { onClose: () => void; onCapture: (file: File) => void }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<BlobPart[]>([]);
   const [error, setError] = useState("");
   const [facing, setFacing] = useState<"user" | "environment">("user");
+  const [mode, setMode] = useState<"PHOTO" | "VIDEO">("PHOTO");
+  const [recording, setRecording] = useState(false);
 
   useEffect(() => {
     let active = true;
-    // Stop any previous stream before switching cameras.
+    // Stop any previous stream before switching cameras / modes.
     streamRef.current?.getTracks().forEach((t) => t.stop());
     navigator.mediaDevices
-      ?.getUserMedia({ video: { facingMode: { ideal: facing } }, audio: false })
+      // Video mode also captures audio; `exact` forces front/back on phones.
+      ?.getUserMedia({ video: { facingMode: { ideal: facing } }, audio: mode === "VIDEO" })
       .then((stream) => {
         if (!active) {
           stream.getTracks().forEach((t) => t.stop());
@@ -1721,11 +1765,12 @@ function CameraDialog({ onClose, onCapture }: { onClose: () => void; onCapture: 
       .catch(() => setError("Camera permission was blocked."));
     return () => {
       active = false;
+      if (recorderRef.current?.state === "recording") recorderRef.current.stop();
       streamRef.current?.getTracks().forEach((t) => t.stop());
     };
-  }, [facing]);
+  }, [facing, mode]);
 
-  function capture() {
+  function capturePhoto() {
     const video = videoRef.current;
     if (!video) return;
     const canvas = document.createElement("canvas");
@@ -1733,8 +1778,7 @@ function CameraDialog({ onClose, onCapture }: { onClose: () => void; onCapture: 
     canvas.height = video.videoHeight;
     const ctx = canvas.getContext("2d");
     if (ctx) {
-      // Mirror the front camera so the saved photo matches the mirrored
-      // preview (otherwise the result looks flipped vs. what you saw).
+      // Mirror the front camera so the saved photo matches the mirrored preview.
       if (facing === "user") {
         ctx.translate(canvas.width, 0);
         ctx.scale(-1, 1);
@@ -1744,6 +1788,37 @@ function CameraDialog({ onClose, onCapture }: { onClose: () => void; onCapture: 
     canvas.toBlob((blob) => {
       if (blob) onCapture(new File([blob], `photo-${Date.now()}.jpg`, { type: "image/jpeg" }));
     }, "image/jpeg", 0.92);
+  }
+
+  function toggleVideo() {
+    if (recording) {
+      recorderRef.current?.stop();
+      return;
+    }
+    const stream = streamRef.current;
+    if (!stream) return;
+    try {
+      const mimeType = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm", "video/mp4"].find(
+        (type) => typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(type)
+      );
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      chunksRef.current = [];
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) chunksRef.current.push(event.data);
+      };
+      recorder.onstop = () => {
+        const type = recorder.mimeType || "video/webm";
+        const blob = new Blob(chunksRef.current, { type });
+        const ext = type.includes("mp4") ? "mp4" : "webm";
+        setRecording(false);
+        if (blob.size > 0) onCapture(new File([blob], `video-${Date.now()}.${ext}`, { type }));
+      };
+      recorder.start();
+      recorderRef.current = recorder;
+      setRecording(true);
+    } catch {
+      setError("Video recording is not supported on this device.");
+    }
   }
 
   return (
@@ -1757,19 +1832,34 @@ function CameraDialog({ onClose, onCapture }: { onClose: () => void; onCapture: 
           <p className="error">{error}</p>
         ) : (
           <>
+            {!recording && (
+              <div className="segmented">
+                <button type="button" className={mode === "PHOTO" ? "active" : ""} onClick={() => setMode("PHOTO")}>Photo</button>
+                <button type="button" className={mode === "VIDEO" ? "active" : ""} onClick={() => setMode("VIDEO")}>Video</button>
+              </div>
+            )}
             <div className="camera-frame">
               <video ref={videoRef} className={`camera-preview ${facing === "user" ? "mirror" : ""}`} autoPlay playsInline muted />
-              <button
-                type="button"
-                className="camera-flip"
-                onClick={() => setFacing((f) => (f === "user" ? "environment" : "user"))}
-                title="Switch camera"
-                aria-label="Switch camera"
-              >
-                <SwitchCamera size={20} />
-              </button>
+              {recording && <span className="call-recording-dot">● REC</span>}
+              {!recording && (
+                <button
+                  type="button"
+                  className="camera-flip"
+                  onClick={() => setFacing((f) => (f === "user" ? "environment" : "user"))}
+                  title="Switch camera"
+                  aria-label="Switch camera"
+                >
+                  <SwitchCamera size={20} />
+                </button>
+              )}
             </div>
-            <button className="primary-button" onClick={capture}>Capture & send</button>
+            {mode === "PHOTO" ? (
+              <button className="primary-button" onClick={capturePhoto}>Capture &amp; send</button>
+            ) : (
+              <button className={`primary-button ${recording ? "danger-button" : ""}`} onClick={toggleVideo}>
+                {recording ? "Stop &amp; send" : "Start recording"}
+              </button>
+            )}
           </>
         )}
       </section>
@@ -1976,8 +2066,8 @@ function GalleryDialog({ token, conversation, onClose }: { token: string; conver
         <div className="gallery-grid">
           {filtered.map((message) => (
             <a key={message.id} className="gallery-item" href={api.mediaUrl(message.originalMediaUrl ?? message.mediaUrl)} target="_blank" rel="noreferrer">
-              {message.type === "IMAGE" && <img src={api.mediaUrl(message.mediaUrl)} alt="" />}
-              {message.type === "VIDEO" && <video src={api.mediaUrl(message.mediaUrl)} />}
+              {message.type === "IMAGE" && <img src={api.mediaUrl(message.mediaUrl)} alt="" loading="lazy" onError={(e) => { e.currentTarget.style.display = "none"; }} />}
+              {message.type === "VIDEO" && <video src={api.mediaUrl(message.mediaUrl)} onError={(e) => { e.currentTarget.style.display = "none"; }} />}
               {message.type === "VOICE" && <Mic size={28} />}
               <span><Download size={14} /> {formatBytes(message.mediaSize)}</span>
             </a>

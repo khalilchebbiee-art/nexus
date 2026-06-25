@@ -42,6 +42,11 @@ export function useCall() {
 
 const FALLBACK_ICE: RTCIceServer[] = [{ urls: ["stun:stun.l.google.com:19302"] }];
 
+// getDisplayMedia is unavailable on most mobile browsers (iOS Safari, Android
+// Chrome), so screen share simply can't work there — used to disable the button.
+const CAN_SHARE_SCREEN =
+  typeof navigator !== "undefined" && typeof navigator.mediaDevices?.getDisplayMedia === "function";
+
 export function CallProvider({
   socket,
   self,
@@ -385,10 +390,17 @@ export function CallProvider({
 
   async function switchCamera() {
     try {
-      // Toggle front/back via facingMode — the reliable approach on phones
-      // (deviceId labels are often empty / unstable on mobile browsers).
+      // Toggle front/back via facingMode. `exact` actually forces the other
+      // camera on phones (a soft/ideal constraint is often ignored and keeps
+      // the current one). Fall back to a soft constraint on single-camera
+      // devices where `exact` would throw.
       const next = facingRef.current === "user" ? "environment" : "user";
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: next } } });
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: next } } });
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: next } });
+      }
       const track = stream.getVideoTracks()[0];
       facingRef.current = next;
       rawCameraTrackRef.current?.stop();
@@ -612,9 +624,11 @@ function CallOverlay({
                 <button className="call-button" onClick={onSwitchCamera} title="Switch camera">
                   <SwitchCamera size={20} />
                 </button>
-                <button className={`call-button ${sharing ? "active" : ""}`} onClick={onToggleScreenShare} title="Share screen">
-                  <MonitorUp size={20} />
-                </button>
+                {CAN_SHARE_SCREEN && (
+                  <button className={`call-button ${sharing ? "active" : ""}`} onClick={onToggleScreenShare} title="Share screen">
+                    <MonitorUp size={20} />
+                  </button>
+                )}
                 <button className={`call-button ${blurOn ? "active" : ""}`} onClick={onToggleBlur} title="Background blur">
                   <Sparkles size={20} />
                 </button>
