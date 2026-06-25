@@ -59,6 +59,8 @@ import type { CallRecord, CallStats, Conversation, FriendRequest, GlobalSearch, 
 const EMOJIS = ["👍", "❤️", "😂", "🔥", "🥰", "😮", "😢", "😡", "🎉", "👏", "🙏", "💯", "😎", "🤔", "👀", "✅"];
 
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL ?? "http://localhost:4000";
+// Keep in sync with the API's MAX_MEDIA_BYTES (200 MB).
+const MAX_MEDIA_BYTES = 200 * 1024 * 1024;
 const savedTheme = localStorage.getItem("nexus-theme");
 
 type EncryptionController = {
@@ -2035,14 +2037,23 @@ function Composer({
 
   async function sendFile(file: File | undefined) {
     if (!file) return;
+    // Reject oversized files up front (instant feedback) so the user isn't left
+    // staring at an optimistic bubble that silently disappears on a 413.
+    if (file.size > MAX_MEDIA_BYTES) {
+      setRecordingError(`File too large (max ${Math.round(MAX_MEDIA_BYTES / (1024 * 1024))} MB).`);
+      if (fileRef.current) fileRef.current.value = "";
+      return;
+    }
+    setRecordingError("");
     const type = file.type.startsWith("image/") ? "IMAGE" : file.type.startsWith("video/") ? "VIDEO" : "VOICE";
     const temp = makeTemp({ type, mediaUrl: URL.createObjectURL(file), mediaMime: file.type, mediaSize: file.size });
     onOptimistic(temp);
     try {
       const { message } = await api.sendMedia(token, conversationId, file, "", undefined);
       onSettled(temp.id, message);
-    } catch {
+    } catch (err) {
       onSettled(temp.id, null);
+      setRecordingError(err instanceof Error ? err.message : "Failed to send file");
     }
     if (fileRef.current) fileRef.current.value = "";
   }

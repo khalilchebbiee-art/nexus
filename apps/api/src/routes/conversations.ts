@@ -39,14 +39,41 @@ const storage = multer.diskStorage({
   }
 });
 
+const MAX_MEDIA_BYTES = 200 * 1024 * 1024;
+const MAX_MEDIA_MB = Math.round(MAX_MEDIA_BYTES / (1024 * 1024));
+
 const upload = multer({
   storage,
-  limits: { fileSize: 100 * 1024 * 1024 },
+  limits: { fileSize: MAX_MEDIA_BYTES },
   fileFilter: (_req, file, callback) => {
     const allowed = ["image/", "video/", "audio/"];
-    callback(null, allowed.some((prefix) => file.mimetype.startsWith(prefix)));
+    // Reject with an Error (not `false`) so the wrapper can return a clear 415
+    // instead of a generic "file required" message.
+    if (allowed.some((prefix) => file.mimetype.startsWith(prefix))) callback(null, true);
+    else callback(new Error("UNSUPPORTED_TYPE"));
   }
 });
+
+// Run multer and convert its errors into JSON responses. Without this a too-big
+// or rejected upload falls through to Express's default handler as a 500 HTML
+// page the client can't parse — so the message just silently vanishes.
+function uploadSingle(field: string) {
+  return (req: import("express").Request, res: import("express").Response, next: import("express").NextFunction) => {
+    upload.single(field)(req, res, (err: unknown) => {
+      if (!err) return next();
+      const code = (err as { code?: string }).code;
+      if (code === "LIMIT_FILE_SIZE") {
+        res.status(413).json({ message: `File too large. Max ${MAX_MEDIA_MB} MB.` });
+        return;
+      }
+      if (err instanceof Error && err.message === "UNSUPPORTED_TYPE") {
+        res.status(415).json({ message: "Unsupported file type. Send an image, video, or audio file." });
+        return;
+      }
+      res.status(400).json({ message: err instanceof Error ? err.message : "Upload failed" });
+    });
+  };
+}
 
 export function conversationsRouter(io: Server) {
   const router = Router();
@@ -274,7 +301,7 @@ export function conversationsRouter(io: Server) {
     }
   });
 
-  router.post("/:conversationId/media", upload.single("file"), async (req, res) => {
+  router.post("/:conversationId/media", uploadSingle("file"), async (req, res) => {
     try {
       if (!req.file) {
         res.status(400).json({ message: "Media file required" });
