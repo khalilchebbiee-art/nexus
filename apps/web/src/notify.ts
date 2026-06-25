@@ -7,6 +7,23 @@ function audio() {
   return ctx;
 }
 
+// Browsers start the AudioContext suspended until a user gesture. Unlock it on
+// the first interaction so notification/call sounds actually play afterwards.
+let unlocked = false;
+export function unlockAudio() {
+  if (unlocked) return;
+  unlocked = true;
+  const resume = () => {
+    void audio().resume();
+    window.removeEventListener("pointerdown", resume);
+    window.removeEventListener("keydown", resume);
+    window.removeEventListener("touchstart", resume);
+  };
+  window.addEventListener("pointerdown", resume);
+  window.addEventListener("keydown", resume);
+  window.addEventListener("touchstart", resume);
+}
+
 function tone(freq: number, start: number, duration: number, gain = 0.08) {
   const ac = audio();
   const osc = ac.createOscillator();
@@ -38,6 +55,28 @@ export function playSound(kind: SoundKind) {
   } catch {
     /* audio not available */
   }
+}
+
+// Looping ring tones for calls. "incoming" = the callee's ringer; "outgoing" =
+// the caller's ringback. Returns a stop function.
+export function startRinging(kind: "incoming" | "outgoing") {
+  let stopped = false;
+  void audio().resume();
+  const pattern = () => {
+    if (stopped) return;
+    if (kind === "incoming") {
+      tone(660, 0, 0.45, 0.09);
+      tone(550, 0.5, 0.45, 0.09);
+    } else {
+      tone(440, 0, 0.6, 0.05);
+    }
+  };
+  pattern();
+  const handle = window.setInterval(pattern, kind === "incoming" ? 2200 : 3200);
+  return () => {
+    stopped = true;
+    window.clearInterval(handle);
+  };
 }
 
 export function ensureNotificationPermission() {

@@ -2,7 +2,6 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type React from "react";
 import { io, type Socket } from "socket.io-client";
 import {
-  Bell,
   CalendarClock,
   Camera,
   Check,
@@ -39,8 +38,9 @@ import {
 import { api, type Session } from "./api";
 import { CallProvider, useCall } from "./call";
 import { decryptText, deriveConversationKey, encryptText, loadLocalPrivateKey, setupKeys, WrongPasswordError } from "./e2ee";
-import { ensureNotificationPermission, playSound, showNotification } from "./notify";
-import type { CallRecord, CallStats, Conversation, FriendRequest, GlobalSearch, Message, Notification, PresenceUpdate, ReceiptUpdate, User } from "./types";
+import { ensureNotificationPermission, playSound, showNotification, unlockAudio } from "./notify";
+import { IslamicPanel } from "./islamic";
+import type { CallRecord, CallStats, Conversation, FriendRequest, GlobalSearch, Message, PresenceUpdate, ReceiptUpdate, User } from "./types";
 
 const EMOJIS = ["👍", "❤️", "😂", "🔥", "🥰", "😮", "😢", "😡", "🎉", "👏", "🙏", "💯", "😎", "🤔", "👀", "✅"];
 
@@ -307,8 +307,6 @@ function Messenger({
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [globalQuery, setGlobalQuery] = useState("");
   const [globalResults, setGlobalResults] = useState<GlobalSearch>({ messages: [], files: [], conversations: [] });
-  const [notifications, setNotifications] = useState<Notification[]>([]);
-  const [unread, setUnread] = useState(0);
   const [mobileListOpen, setMobileListOpen] = useState(true);
   const [status, setStatus] = useState("");
   const [callHistoryOpen, setCallHistoryOpen] = useState(false);
@@ -347,15 +345,9 @@ function Messenger({
     setRequests(requests);
   }, [session.token]);
 
-  const loadNotifications = useCallback(async () => {
-    const result = await api.notifications(session.token);
-    setNotifications(result.notifications);
-    setUnread(result.unread);
-  }, [session.token]);
-
   const refresh = useCallback(async () => {
-    await Promise.all([loadConversations(), loadFriends(), loadRequests(), loadNotifications()]);
-  }, [loadConversations, loadFriends, loadNotifications, loadRequests]);
+    await Promise.all([loadConversations(), loadFriends(), loadRequests()]);
+  }, [loadConversations, loadFriends, loadRequests]);
 
   useEffect(() => {
     void refresh();
@@ -381,7 +373,6 @@ function Messenger({
         socket.emit("conversation:read", message.conversationId);
       }
       void loadConversations();
-      void loadNotifications();
     });
     socket.on("message:updated", (message: Message) => {
       setMessages((current) => current.map((item) => (item.id === message.id ? message : item)));
@@ -428,10 +419,11 @@ function Messenger({
       socket.disconnect();
       setSocket(null);
     };
-  }, [loadConversations, loadNotifications, loadRequests, refresh, applyPresence, session.token, session.user.id]);
+  }, [loadConversations, loadRequests, refresh, applyPresence, session.token, session.user.id]);
 
   useEffect(() => {
     ensureNotificationPermission();
+    unlockAudio();
   }, []);
 
   useEffect(() => {
@@ -494,12 +486,6 @@ function Messenger({
     setConversations((current) => [conversation, ...current]);
     setSelectedId(conversation.id);
     setCreateOpen(false);
-  }
-
-  async function openNotification(notification: Notification) {
-    if (notification.conversationId) setSelectedId(notification.conversationId);
-    await api.markNotificationsRead(session.token);
-    await loadNotifications();
   }
 
   // Optimistic send: show the message instantly, then reconcile with the server.
@@ -651,17 +637,7 @@ function Messenger({
           })}
         </section>
 
-        {notifications.length > 0 && (
-          <section className="panel notifications">
-            <h3>Notifications {unread > 0 ? `(${unread})` : ""}</h3>
-            {notifications.slice(0, 6).map((notification) => (
-              <button key={notification.id} className={`notification ${notification.readAt ? "" : "unread"}`} onClick={() => openNotification(notification)}>
-                <strong>{notification.title}</strong>
-                <span>{notification.body}</span>
-              </button>
-            ))}
-          </section>
-        )}
+        <IslamicPanel />
 
         <section className="panel friends">
           <h3>Friends</h3>
@@ -705,7 +681,6 @@ function Messenger({
             <button className="icon-button" title="Media gallery" onClick={() => setGalleryOpen(true)}><Images size={18} /></button>
             <CallButtons selected={selected} peer={peer} />
             <button className="icon-button" title="Call history" onClick={() => setCallHistoryOpen(true)}><PhoneCall size={18} /></button>
-            <button className="icon-button" title="Notifications"><Bell size={18} /></button>
           </div>
         </header>
 
@@ -1039,6 +1014,25 @@ function DecryptedBody({ conversation, message }: { conversation: Conversation; 
   return text ? <p>{text}</p> : null;
 }
 
+function DecryptedPreview({ conversation, message }: { conversation?: Conversation; message: Message }) {
+  const { ready, decryptForConversation } = useEncryption();
+  const [text, setText] = useState<string>(() => (message.encrypted ? "🔒 …" : previewMessage(message)));
+  useEffect(() => {
+    let active = true;
+    if (!message.encrypted || !conversation) {
+      setText(previewMessage(message));
+      return;
+    }
+    void decryptForConversation(conversation, message).then((t) => {
+      if (active) setText(t ?? "🔒 Encrypted message");
+    });
+    return () => {
+      active = false;
+    };
+  }, [message.id, message.encrypted, conversation, decryptForConversation, ready]);
+  return <>{text}</>;
+}
+
 function EncryptionBadge({ conversation }: { conversation?: Conversation | null }) {
   const { canEncrypt } = useEncryption();
   if (!canEncrypt(conversation)) return null;
@@ -1152,7 +1146,7 @@ function MessageList({
               {message.replyTo && (
                 <div className="reply-quote">
                   <strong>{message.replyTo.senderId === currentUserId ? "You" : message.replyTo.sender?.displayName}</strong>
-                  <small>{previewMessage(message.replyTo)}</small>
+                  <small><DecryptedPreview conversation={conversation} message={message.replyTo} /></small>
                 </div>
               )}
               {message.deletedAt ? (
@@ -1438,7 +1432,7 @@ function Composer({
         <div className="reply-banner">
           <div>
             <strong>Replying to {replyTo.senderId === self.id ? "yourself" : replyTo.sender?.displayName}</strong>
-            <small>{previewMessage(replyTo)}</small>
+            <small><DecryptedPreview conversation={conversation} message={replyTo} /></small>
           </div>
           <button className="icon-button" onClick={onClearReply} title="Cancel reply"><X size={16} /></button>
         </div>
@@ -1574,7 +1568,7 @@ function PinnedDialog({
             <div key={pin.id} className="call-history-item">
               <div className="call-history-meta">
                 <strong>{pin.sender?.displayName}</strong>
-                <small>{previewMessage(pin)}</small>
+                <small><DecryptedPreview conversation={conversation} message={pin} /></small>
               </div>
               <button className="icon-button" title="Unpin" onClick={() => { onUnpin(pin); setPins((c) => c.filter((p) => p.id !== pin.id)); }}>
                 <Pin size={15} />

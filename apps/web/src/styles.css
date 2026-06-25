@@ -1305,6 +1305,200 @@ textarea:focus {
   display: none;
 }
 
+/* ===== Islamic panel (prayer times + adhkar) ===== */
+.islamic-panel {
+  background: linear-gradient(160deg, color-mix(in srgb, var(--accent) 10%, var(--panel)), var(--panel));
+}
+
+.islamic-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.islamic-tabs button {
+  border: 1px solid var(--line);
+  background: var(--panel-strong);
+  color: var(--muted);
+  border-radius: 8px;
+  padding: 8px 4px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.islamic-tabs button.active {
+  background: var(--accent);
+  color: #06120f;
+  border-color: transparent;
+}
+
+.prayer-list {
+  display: grid;
+  gap: 6px;
+}
+
+.prayer-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-strong);
+  font-size: 15px;
+}
+
+.prayer-row.next {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, var(--panel-strong));
+  color: var(--text);
+  font-weight: 800;
+}
+
+.prayer-row time {
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.adhkar-reader {
+  display: grid;
+  gap: 12px;
+  text-align: center;
+}
+
+.adhkar-progress {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.adhkar-text {
+  margin: 0;
+  font-size: 17px;
+  line-height: 2;
+  color: var(--text);
+  max-height: 40vh;
+  overflow-y: auto;
+  font-family: "Amiri", "Scheherazade New", "Traditional Arabic", serif;
+}
+
+.adhkar-count {
+  border: 0;
+  border-radius: 12px;
+  padding: 14px;
+  background: var(--accent);
+  color: #06120f;
+  font-weight: 800;
+  font-size: 16px;
+}
+
+.adhkar-skip {
+  justify-self: center;
+}
+
+.adhkar-done {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  padding: 16px;
+  color: var(--accent);
+  text-align: center;
+}
+
+.adhkar-done button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ===== Mobile responsiveness ===== */
+@media (max-width: 900px) {
+  .sidebar {
+    width: min(420px, 100vw);
+  }
+
+  .chat-tools {
+    gap: 4px;
+  }
+
+  .chat-tools .icon-button {
+    width: 34px;
+    height: 34px;
+  }
+
+  .chat-header {
+    padding: 12px 14px;
+    gap: 8px;
+  }
+
+  .composer {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .composer .schedule-control {
+    display: none;
+  }
+
+  .composer input[type="text"],
+  .composer > input:not([type]) {
+    flex: 1 1 100%;
+    order: 5;
+  }
+
+  .composer .icon-button {
+    width: 38px;
+    height: 38px;
+  }
+
+  .message {
+    max-width: 90%;
+  }
+
+  .message-actions {
+    opacity: 1;
+  }
+
+  .reply-quote small,
+  .reply-banner small {
+    max-width: 70vw;
+  }
+}
+
+@media (max-width: 560px) {
+  .topbar .top-actions {
+    gap: 4px;
+  }
+
+  .top-actions .icon-button {
+    width: 34px;
+    height: 34px;
+  }
+
+  .chat-header .identity strong {
+    font-size: 15px;
+  }
+
+  .media {
+    max-width: 78vw;
+  }
+
+  .dialog {
+    padding: 18px;
+  }
+
+  .call-controls {
+    gap: 10px;
+    padding: 16px 10px;
+  }
+
+  .adhkar-text {
+    font-size: 16px;
+    max-height: 46vh;
+  }
+}
+
 @media (max-width: 900px) {
   .auth-page {
     padding: 18px;
@@ -1354,12 +1548,8 @@ textarea:focus {
 
   .chat-header,
   .composer {
-    padding-left: 12px;
-    padding-right: 12px;
-  }
-
-  .chat-tools {
-    display: none;
+    padding-left: 10px;
+    padding-right: 10px;
   }
 
   .message-list {
@@ -1367,6 +1557,6 @@ textarea:focus {
   }
 
   .message {
-    max-width: 94%;
+    max-width: 92%;
   }
 }

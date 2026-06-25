@@ -14,6 +14,7 @@ import {
   VideoOff
 } from "lucide-react";
 import { api } from "./api";
+import { startRinging } from "./notify";
 import { createBlurredTrack, type BlurHandle } from "./blur";
 import type { CallType, IncomingCall, User } from "./types";
 
@@ -344,6 +345,12 @@ export function CallProvider({
     if (call?.state !== "active") return;
     const handle = window.setInterval(() => setElapsed((value) => value + 1), 1000);
     return () => window.clearInterval(handle);
+  }, [call?.state]);
+
+  // Ring tones: caller hears ringback, callee hears the ringer, until answered.
+  useEffect(() => {
+    if (call?.state === "incoming") return startRinging("incoming");
+    if (call?.state === "outgoing") return startRinging("outgoing");
   }, [call?.state]);
 
   // Bind streams to <video> when the overlay mounts.
