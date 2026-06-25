@@ -1643,7 +1643,12 @@ function MessageList({
   }, []);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
-    bottomRef.current?.scrollIntoView({ behavior, block: "end" });
+    // Scroll the list container directly to its true bottom — more reliable than
+    // scrollIntoView inside a nested flex scroller, so the newest message always
+    // ends up fully above the composer.
+    const node = listRef.current;
+    if (node) node.scrollTo({ top: node.scrollHeight, behavior });
+    else bottomRef.current?.scrollIntoView({ behavior, block: "end" });
     atBottomRef.current = true;
     setShowJump(false);
   }, []);
@@ -1695,16 +1700,19 @@ function MessageList({
     };
   }, [scrollToBottom]);
 
-  // Only auto-follow new messages if the user is already reading the bottom,
-  // so scrolling up to older messages is never interrupted.
+  // Auto-follow new messages when the user is reading the bottom — and always
+  // when the newest message is the user's own send — so scrolling up to older
+  // messages is never interrupted, but sending always snaps to the bottom.
   useEffect(() => {
-    if (atBottomRef.current) {
+    const last = messages[messages.length - 1];
+    const lastMine = last?.senderId === currentUserId;
+    if (atBottomRef.current || lastMine) {
       scrollToBottom();
       const handles = [120, 420].map((delay) => window.setTimeout(() => scrollToBottom("auto"), delay));
       return () => handles.forEach(window.clearTimeout);
     }
     setShowJump(true);
-  }, [messages.length, scrollToBottom]);
+  }, [messages.length, currentUserId, scrollToBottom]);
 
   async function startEdit(message: Message) {
     const text = conversation ? await decryptForConversation(conversation, message) : message.body;
@@ -2261,10 +2269,12 @@ function CameraDialog({ onClose, onCapture }: { onClose: () => void; onCapture: 
       };
       recorder.onstop = () => {
         const type = recorder.mimeType || "video/webm";
+        // Strip ;codecs=… so the server maps the type to the right extension.
+        const baseType = type.split(";")[0] || "video/webm";
         const blob = new Blob(chunksRef.current, { type });
-        const ext = type.includes("mp4") ? "mp4" : "webm";
+        const ext = baseType.includes("mp4") ? "mp4" : "webm";
         setRecording(false);
-        if (blob.size > 0) onCapture(new File([blob], `video-${Date.now()}.${ext}`, { type }));
+        if (blob.size > 0) onCapture(new File([blob], `video-${Date.now()}.${ext}`, { type: baseType }));
       };
       recorder.start();
       recorderRef.current = recorder;

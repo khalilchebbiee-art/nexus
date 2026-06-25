@@ -81,38 +81,47 @@ const MEDIA_PREFIXES = ["image/", "video/", "audio/"];
 // inline. (helmet also sends X-Content-Type-Options: nosniff as defence.)
 const DOC_MIMES = new Set(Object.values(EXTENSION_MIME).filter((mime) => mime.startsWith("application/") || mime.startsWith("text/")));
 
-function isMediaMime(mime: string | undefined): boolean {
-  return Boolean(mime && MEDIA_PREFIXES.some((prefix) => mime.startsWith(prefix)));
+// Strip codec params / casing: "video/webm;codecs=vp9,opus" -> "video/webm".
+// Browsers send these on MediaRecorder uploads; the base type drives mapping.
+function normalizeMime(mime: string | undefined): string {
+  return (mime ?? "").split(";")[0].trim().toLowerCase();
 }
 
-function isAllowedMime(mime: string | undefined): boolean {
-  return isMediaMime(mime) || (Boolean(mime) && DOC_MIMES.has(mime as string));
+function isMediaMime(mime: string): boolean {
+  return MEDIA_PREFIXES.some((prefix) => mime.startsWith(prefix));
 }
 
-// The mimetype to trust for an upload: the browser's if it's an allowed media
-// or document type, otherwise inferred from the filename extension. Empty
-// string when neither identifies a supported file (caller rejects it).
+function isAllowedMime(mime: string): boolean {
+  return Boolean(mime) && (isMediaMime(mime) || DOC_MIMES.has(mime));
+}
+
+// The mimetype to trust for an upload: the browser's (normalized) if it's an
+// allowed media/document type, otherwise inferred from the filename extension.
+// Empty string when neither identifies a supported file (caller rejects it).
 export function effectiveMime(originalname: string | undefined, mimetype: string | undefined): string {
-  if (isAllowedMime(mimetype)) return mimetype as string;
+  const base = normalizeMime(mimetype);
+  if (isAllowedMime(base)) return base;
   const ext = path.extname(originalname ?? "").toLowerCase();
   return EXTENSION_MIME[ext] ?? "";
 }
 
 // Message type bucket for a resolved mimetype.
 export function messageKindForMime(mime: string): "IMAGE" | "VIDEO" | "VOICE" | "FILE" {
-  if (mime.startsWith("image/")) return "IMAGE";
-  if (mime.startsWith("video/")) return "VIDEO";
-  if (mime.startsWith("audio/")) return "VOICE";
+  const base = normalizeMime(mime);
+  if (base.startsWith("image/")) return "IMAGE";
+  if (base.startsWith("video/")) return "VIDEO";
+  if (base.startsWith("audio/")) return "VOICE";
   return "FILE";
 }
 
 export function extensionForMime(mime: string): string {
-  const known = MIME_EXTENSIONS[mime];
+  const base = normalizeMime(mime);
+  const known = MIME_EXTENSIONS[base];
   if (known) return known;
   // Safe per-category fallback for anything that passed the upload filter but
   // isn't explicitly mapped — never an executable/markup extension.
-  if (mime.startsWith("image/")) return ".img";
-  if (mime.startsWith("video/")) return ".vid";
-  if (mime.startsWith("audio/")) return ".aud";
+  if (base.startsWith("image/")) return ".img";
+  if (base.startsWith("video/")) return ".vid";
+  if (base.startsWith("audio/")) return ".aud";
   return ".bin";
 }

@@ -318,6 +318,13 @@ body.messenger-active {
   min-width: 0;
 }
 
+/* Even spacing between icon buttons in the header/tool clusters. */
+.top-actions,
+.chat-tools,
+.inline-actions {
+  gap: 8px;
+}
+
 .identity span,
 .user-row small,
 .conversation-item small {
