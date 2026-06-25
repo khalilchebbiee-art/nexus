@@ -1,17 +1,71 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
+import * as adhan from "adhan";
 import { Check, RotateCcw } from "lucide-react";
 import { ADHKAR_MASAA, ADHKAR_SABAH, type Dhikr } from "./adhkar";
 
-type Timings = { Fajr: string; Sunrise: string; Dhuhr: string; Asr: string; Maghrib: string; Isha: string };
+const PRAYERS = [
+  { key: "fajr", label: "الفجر" },
+  { key: "sunrise", label: "الشروق" },
+  { key: "dhuhr", label: "الظهر" },
+  { key: "asr", label: "العصر" },
+  { key: "maghrib", label: "المغرب" },
+  { key: "isha", label: "العشاء" }
+] as const;
 
-const PRAYERS: { key: keyof Timings; label: string }[] = [
-  { key: "Fajr", label: "الفجر" },
-  { key: "Sunrise", label: "الشروق" },
-  { key: "Dhuhr", label: "الظهر" },
-  { key: "Asr", label: "العصر" },
-  { key: "Maghrib", label: "المغرب" },
-  { key: "Isha", label: "العشاء" }
-];
+type PrayerKey = (typeof PRAYERS)[number]["key"];
+
+// Picks the official calculation convention for the detected country so times
+// match the local authority (Tunisia, Saudi, Egypt, North America, etc.).
+function paramsForCountry(cc?: string): adhan.CalculationParameters {
+  const M = adhan.CalculationMethod;
+  const custom = (fajr: number, isha: number) => {
+    const p = M.Other();
+    p.fajrAngle = fajr;
+    p.ishaAngle = isha;
+    return p;
+  };
+  let params: adhan.CalculationParameters;
+  let hanafi = false;
+  switch (cc) {
+    case "TN": params = custom(18, 18); break; // Tunisia
+    case "DZ": params = custom(18, 17); break; // Algeria
+    case "MA": params = custom(19, 17); break; // Morocco
+    case "EG": params = M.Egyptian(); break;
+    case "SA": params = M.UmmAlQura(); break;
+    case "AE": params = M.Dubai(); break;
+    case "KW": params = M.Kuwait(); break;
+    case "QA": params = M.Qatar(); break;
+    case "TR": params = M.Turkey(); break;
+    case "IR": params = M.Tehran(); break;
+    case "SG": params = M.Singapore(); break;
+    case "ID":
+    case "MY": params = custom(20, 18); break; // Kemenag / JAKIM
+    case "FR": params = custom(12, 12); break; // UOIF
+    case "US":
+    case "CA": params = M.NorthAmerica(); break;
+    case "PK":
+    case "IN":
+    case "BD":
+    case "AF": params = M.Karachi(); hanafi = true; break;
+    default: params = M.MuslimWorldLeague();
+  }
+  params.madhab = hanafi ? adhan.Madhab.Hanafi : adhan.Madhab.Shafi;
+  return params;
+}
+
+async function detectCountry(lat: number, lon: number): Promise<string | undefined> {
+  const cached = localStorage.getItem("nexus-cc");
+  if (cached) return cached;
+  try {
+    const res = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=en`);
+    const data = await res.json();
+    const cc = data.countryCode as string | undefined;
+    if (cc) localStorage.setItem("nexus-cc", cc);
+    return cc;
+  } catch {
+    return undefined; // offline / blocked -> fall back to Muslim World League
+  }
+}
 
 export function IslamicPanel() {
   const [mode, setMode] = useState<"prayer" | "sabah" | "masaa">("prayer");
@@ -28,61 +82,53 @@ export function IslamicPanel() {
 }
 
 function PrayerTimes() {
-  const [timings, setTimings] = useState<Timings | null>(null);
+  const [rows, setRows] = useState<{ key: PrayerKey; label: string; time: string }[] | null>(null);
+  const [nextKey, setNextKey] = useState<PrayerKey | null>(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    const today = new Date().toDateString();
-    const cached = localStorage.getItem("nexus-prayer");
-    if (cached) {
-      const parsed = JSON.parse(cached) as { day: string; timings: Timings };
-      if (parsed.day === today) {
-        setTimings(parsed.timings);
-        return;
-      }
-    }
     if (!navigator.geolocation) {
-      setError("الموقع غير متاح");
+      setError("الموقع غير متاح في هذا المتصفح");
       return;
     }
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
-        try {
-          const url = `https://api.aladhan.com/v1/timings?latitude=${pos.coords.latitude}&longitude=${pos.coords.longitude}&method=3`;
-          const res = await fetch(url);
-          const data = await res.json();
-          const t = data.data.timings as Timings;
-          setTimings(t);
-          localStorage.setItem("nexus-prayer", JSON.stringify({ day: today, timings: t }));
-        } catch {
-          setError("تعذّر تحميل المواقيت");
-        }
+        const { latitude, longitude } = pos.coords;
+        const cc = await detectCountry(latitude, longitude);
+        const params = paramsForCountry(cc);
+        const pt = new adhan.PrayerTimes(new adhan.Coordinates(latitude, longitude), new Date(), params);
+        const times: Record<PrayerKey, Date> = {
+          fajr: pt.fajr,
+          sunrise: pt.sunrise,
+          dhuhr: pt.dhuhr,
+          asr: pt.asr,
+          maghrib: pt.maghrib,
+          isha: pt.isha
+        };
+        setRows(
+          PRAYERS.map((p) => ({
+            key: p.key,
+            label: p.label,
+            time: times[p.key].toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+          }))
+        );
+        const np = pt.nextPrayer();
+        setNextKey(np === adhan.Prayer.None ? "fajr" : (np as PrayerKey));
       },
       () => setError("فعّل الموقع لعرض مواقيت الصلاة"),
-      { timeout: 10000 }
+      { timeout: 10000, maximumAge: 3600000 }
     );
   }, []);
 
-  const nextKey = useMemo(() => {
-    if (!timings) return null;
-    const now = new Date();
-    const mins = now.getHours() * 60 + now.getMinutes();
-    for (const p of PRAYERS) {
-      const [h, m] = timings[p.key].split(":").map(Number);
-      if (h * 60 + m > mins) return p.key;
-    }
-    return "Fajr" as keyof Timings;
-  }, [timings]);
-
   if (error) return <p className="empty" dir="rtl">{error}</p>;
-  if (!timings) return <p className="empty" dir="rtl">…جارٍ تحديد موقعك</p>;
+  if (!rows) return <p className="empty" dir="rtl">…جارٍ تحديد موقعك</p>;
 
   return (
     <div className="prayer-list" dir="rtl">
-      {PRAYERS.map((p) => (
+      {rows.map((p) => (
         <div key={p.key} className={`prayer-row ${nextKey === p.key ? "next" : ""}`}>
           <span>{p.label}</span>
-          <time>{timings[p.key]}</time>
+          <time>{p.time}</time>
         </div>
       ))}
     </div>
