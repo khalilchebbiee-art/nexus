@@ -1253,6 +1253,7 @@ function Messenger({
             token={session.token}
             self={session.user}
             conversation={selected}
+            socket={socket}
             replyTo={replyTo}
             onClearReply={() => setReplyTo(null)}
             onTyping={emitTyping}
@@ -1924,6 +1925,7 @@ function Composer({
   token,
   self,
   conversation,
+  socket,
   replyTo,
   onClearReply,
   onTyping,
@@ -1933,6 +1935,7 @@ function Composer({
   token: string;
   self: User;
   conversation: Conversation;
+  socket: Socket | null;
   replyTo: Message | null;
   onClearReply: () => void;
   onTyping: (conversationId: string) => void;
@@ -2001,8 +2004,29 @@ function Composer({
     if (!scheduledIso) onOptimistic(temp);
     try {
       const { body: payload, encrypted } = await encryptForConversation(conversation, text);
-      const { message } = await api.sendMessage(token, conversationId, payload, scheduledIso, encrypted, replyId);
-      if (!scheduledIso) onSettled(temp.id, message.deliveredAt ? message : null);
+      // Prefer the open socket (no HTTP round-trip, no REST rate limiter). Fall
+      // back to REST only when disconnected, so each send takes exactly one path
+      // (no duplicate-message risk).
+      if (socket?.connected) {
+        socket
+          .timeout(10000)
+          .emit(
+            "message:send",
+            { conversationId, body: payload, encrypted, replyToId: replyId, scheduledFor: scheduledIso },
+            (err: Error | null, res?: { message: Message } | { error: string }) => {
+              if (scheduledIso) return;
+              if (err || !res || "error" in res) {
+                onSettled(temp.id, null);
+                setRecordingError(res && "error" in res ? res.error : "Failed to send message");
+              } else {
+                onSettled(temp.id, res.message.deliveredAt ? res.message : null);
+              }
+            }
+          );
+      } else {
+        const { message } = await api.sendMessage(token, conversationId, payload, scheduledIso, encrypted, replyId);
+        if (!scheduledIso) onSettled(temp.id, message.deliveredAt ? message : null);
+      }
     } catch {
       if (!scheduledIso) onSettled(temp.id, null);
       setRecordingError("Failed to send message");

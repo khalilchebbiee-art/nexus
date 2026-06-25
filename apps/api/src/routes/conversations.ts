@@ -602,7 +602,7 @@ function messageInclude() {
   };
 }
 
-async function createMessage(
+export async function createMessage(
   conversationId: string,
   senderId: string,
   data: {
@@ -719,7 +719,7 @@ async function acceptedFriendIds(userId: string, requested: string[]): Promise<s
   return [...wanted].filter((id) => friends.has(id));
 }
 
-async function notifyMembers(
+export async function notifyMembers(
   message: { id: string; conversationId: string; senderId: string; body: string; type: MessageType; encrypted?: boolean },
   type: NotificationType,
   overrideBody?: string

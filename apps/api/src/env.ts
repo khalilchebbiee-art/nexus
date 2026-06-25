@@ -6,6 +6,10 @@ const envSchema = z.object({
   JWT_SECRET: z.string().min(32),
   API_PORT: z.coerce.number().default(4000),
   CLIENT_ORIGIN: z.string().url().default("http://localhost:5173"),
+  // Optional Redis. When set, Socket.IO uses the Redis pub/sub adapter so
+  // multiple API instances share rooms/fan-out (horizontal scale). Unset =
+  // single-instance in-memory adapter (dev / free tier).
+  REDIS_URL: z.string().url().optional(),
   MEDIA_STORAGE_PROVIDER: z.enum(["local", "cloud"]).default("local"),
   MEDIA_PUBLIC_BASE_URL: z.string().url().optional(),
   // Cloudflare R2 (S3-compatible) object storage. When all of these are set and

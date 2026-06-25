@@ -1,10 +1,12 @@
 import type { Server, Socket } from "socket.io";
-import { CallStatus, CallType } from "@prisma/client";
+import { CallStatus, CallType, MessageType, NotificationType } from "@prisma/client";
 import { getUserFromToken } from "./auth.js";
 import { prisma } from "./db.js";
 import { iceServers } from "./ice.js";
-import { publicUser } from "./utils.js";
+import { AppError, publicUser } from "./utils.js";
 import { onlineUsers } from "./io.js";
+import { createMessage, notifyMembers } from "./routes/conversations.js";
+import { textMessageSchema } from "./validators.js";
 
 async function friendIds(userId: string) {
   const rows = await prisma.friendship.findMany({
@@ -101,6 +103,55 @@ export function configureRealtime(io: Server) {
         });
       }
     });
+
+    // Send a text message over the open socket — saves an HTTP round-trip and
+    // the REST middleware/rate-limiter on the hot path. createMessage enforces
+    // membership, channel-post rights, and blocks; a light per-socket bucket
+    // caps write spam (REST limiter doesn't cover WS).
+    const sendTimes: number[] = [];
+    socket.on(
+      "message:send",
+      async (
+        payload: { conversationId?: string; body?: string; encrypted?: boolean; replyToId?: string; scheduledFor?: string },
+        ack?: (response: { message: unknown } | { error: string }) => void
+      ) => {
+        try {
+          const now = Date.now();
+          while (sendTimes.length && now - sendTimes[0] > 10_000) sendTimes.shift();
+          if (sendTimes.length >= 30) {
+            ack?.({ error: "Slow down" });
+            return;
+          }
+          sendTimes.push(now);
+
+          const conversationId = String(payload?.conversationId ?? "");
+          if (!conversationId) {
+            ack?.({ error: "Conversation required" });
+            return;
+          }
+          const input = textMessageSchema.parse({
+            body: payload?.body,
+            encrypted: payload?.encrypted,
+            replyToId: payload?.replyToId,
+            scheduledFor: payload?.scheduledFor
+          });
+          const message = await createMessage(conversationId, userId, {
+            type: MessageType.TEXT,
+            body: input.body,
+            encrypted: input.encrypted ?? false,
+            replyToId: input.replyToId,
+            scheduledFor: input.scheduledFor ? new Date(input.scheduledFor) : undefined
+          });
+          if (message.deliveredAt) io.to(conversationId).emit("message:new", message);
+          void notifyMembers(message, input.scheduledFor ? NotificationType.SCHEDULED : NotificationType.MESSAGE).catch((error) =>
+            console.error("notifyMembers", error)
+          );
+          ack?.({ message });
+        } catch (error) {
+          ack?.({ error: error instanceof AppError ? error.message : "Unable to send" });
+        }
+      }
+    );
 
     socket.on("typing:start", (conversationId: string) => {
       socket.to(conversationId).emit("typing:start", { conversationId, user: socket.data.user });

@@ -6,6 +6,8 @@ import compression from "compression";
 import rateLimit from "express-rate-limit";
 import path from "node:path";
 import { Server } from "socket.io";
+import { createClient } from "redis";
+import { createAdapter } from "@socket.io/redis-adapter";
 import { env } from "./env.js";
 import { authRouter } from "./routes/auth.js";
 import { usersRouter } from "./routes/users.js";
@@ -25,6 +27,23 @@ const io = new Server(server, {
   // outweighs the byte savings). Cuts bandwidth on message/receipt fan-out.
   perMessageDeflate: { threshold: 1024 }
 });
+
+// Horizontal scale: when REDIS_URL is set, route Socket.IO fan-out through a
+// Redis pub/sub adapter so rooms/emits work across multiple API instances.
+// Non-fatal — if Redis is unreachable the server keeps running on the default
+// in-memory adapter (single instance) rather than crashing.
+if (env.REDIS_URL) {
+  const pubClient = createClient({ url: env.REDIS_URL });
+  const subClient = pubClient.duplicate();
+  pubClient.on("error", (error) => console.error("redis pub error", error));
+  subClient.on("error", (error) => console.error("redis sub error", error));
+  Promise.all([pubClient.connect(), subClient.connect()])
+    .then(() => {
+      io.adapter(createAdapter(pubClient, subClient));
+      console.log("Socket.IO Redis adapter active");
+    })
+    .catch((error) => console.error("Redis adapter disabled:", error));
+}
 
 setIo(io);
 configureRealtime(io);

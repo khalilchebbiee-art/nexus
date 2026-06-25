@@ -30,6 +30,11 @@ services:
         sync: false # set to the nexus-web URL after first deploy
       - key: STUN_URLS
         value: stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302
+      # Optional: set to a Redis URL (e.g. Upstash / Render Key Value) to enable
+      # the Socket.IO Redis adapter for multi-instance horizontal scaling. Leave
+      # unset for a single instance.
+      - key: REDIS_URL
+        sync: false
       # ---- Durable media (Cloudflare R2). Without these, uploads fall back to
       # the ephemeral local disk and are wiped on every redeploy. ----
       - key: MEDIA_STORAGE_PROVIDER
