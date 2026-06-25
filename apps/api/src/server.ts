@@ -2,6 +2,7 @@ import express from "express";
 import http from "node:http";
 import cors from "cors";
 import helmet from "helmet";
+import compression from "compression";
 import rateLimit from "express-rate-limit";
 import path from "node:path";
 import { Server } from "socket.io";
@@ -19,7 +20,10 @@ import { setIo } from "./io.js";
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: env.CLIENT_ORIGIN, credentials: true }
+  cors: { origin: env.CLIENT_ORIGIN, credentials: true },
+  // Compress socket frames above ~1KB (skip tiny frames where deflate CPU
+  // outweighs the byte savings). Cuts bandwidth on message/receipt fan-out.
+  perMessageDeflate: { threshold: 1024 }
 });
 
 setIo(io);
@@ -33,9 +37,12 @@ app.set("trust proxy", 1);
 
 app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
 app.use(cors({ origin: env.CLIENT_ORIGIN, credentials: true }));
+// gzip/deflate JSON responses (conversation lists, message pages) above 1KB.
+app.use(compression({ threshold: 1024 }));
 app.use(express.json({ limit: "1mb" }));
-app.use(rateLimit({ windowMs: 60_000, limit: 120, standardHeaders: true, legacyHeaders: false }));
-app.use("/uploads", express.static(path.resolve("uploads")));
+// Headroom for active chat (each message is a POST). Auth stays tight below.
+app.use(rateLimit({ windowMs: 60_000, limit: 600, standardHeaders: true, legacyHeaders: false }));
+app.use("/uploads", express.static(path.resolve("uploads"), { maxAge: "7d", immutable: true }));
 
 // Tighter limiter for credential endpoints to blunt brute-force / enumeration.
 const authLimiter = rateLimit({ windowMs: 60_000, limit: 20, standardHeaders: true, legacyHeaders: false });

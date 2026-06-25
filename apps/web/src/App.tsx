@@ -598,7 +598,9 @@ function Messenger({
   }, [conversations, selectedId]);
 
   useEffect(() => {
-    const socket = io(SOCKET_URL, { auth: { token: session.token } });
+    // Connect straight over WebSocket — skip the HTTP long-poll handshake +
+    // upgrade round-trip for a faster connect and lower per-event overhead.
+    const socket = io(SOCKET_URL, { auth: { token: session.token }, transports: ["websocket"] });
     socketRef.current = socket;
     setSocket(socket);
     // A rejected socket handshake means the token is invalid — trigger the same

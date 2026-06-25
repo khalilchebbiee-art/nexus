@@ -262,8 +262,12 @@ export function conversationsRouter(io: Server) {
         replyToId: input.replyToId,
         scheduledFor: input.scheduledFor ? new Date(input.scheduledFor) : undefined
       });
-      await notifyMembers(message, input.scheduledFor ? NotificationType.SCHEDULED : NotificationType.MESSAGE);
+      // Deliver first (hot path), then persist notifications + push off the
+      // critical path so recipients don't wait on write amplification.
       if (message.deliveredAt) io.to(conversationId).emit("message:new", message);
+      void notifyMembers(message, input.scheduledFor ? NotificationType.SCHEDULED : NotificationType.MESSAGE).catch((error) =>
+        console.error("notifyMembers", error)
+      );
       res.status(201).json({ message });
     } catch (error) {
       handleError(res, error);
@@ -298,8 +302,10 @@ export function conversationsRouter(io: Server) {
         mediaSize: req.file.size,
         scheduledFor: input.scheduledFor ? new Date(input.scheduledFor) : undefined
       });
-      await notifyMembers(message, input.scheduledFor ? NotificationType.SCHEDULED : NotificationType.MESSAGE);
       if (message.deliveredAt) io.to(conversationId).emit("message:new", message);
+      void notifyMembers(message, input.scheduledFor ? NotificationType.SCHEDULED : NotificationType.MESSAGE).catch((error) =>
+        console.error("notifyMembers", error)
+      );
       res.status(201).json({ message });
     } catch (error) {
       handleError(res, error);
@@ -419,8 +425,8 @@ export function conversationsRouter(io: Server) {
         mediaMime: source.mediaMime ?? undefined,
         mediaSize: source.mediaSize ?? undefined
       });
-      await notifyMembers(message, NotificationType.MESSAGE);
       io.to(input.toConversationId).emit("message:new", message);
+      void notifyMembers(message, NotificationType.MESSAGE).catch((error) => console.error("notifyMembers", error));
       res.status(201).json({ message });
     } catch (error) {
       handleError(res, error);
@@ -583,8 +589,8 @@ async function deliverScheduledMessages(io: Server) {
       data: { deliveredAt: new Date() },
       include: messageInclude()
     });
-    await notifyMembers(delivered, NotificationType.MESSAGE);
     io.to(delivered.conversationId).emit("message:new", delivered);
+    void notifyMembers(delivered, NotificationType.MESSAGE).catch((error) => console.error("notifyMembers", error));
   }
 }
 
