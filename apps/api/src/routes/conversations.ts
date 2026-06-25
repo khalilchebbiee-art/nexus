@@ -17,7 +17,7 @@ import {
   updateConversationSchema
 } from "../validators.js";
 import { AppError, handleError, publicUser } from "../utils.js";
-import { effectiveMime, extensionForMime } from "../media.js";
+import { effectiveMime, extensionForMime, messageKindForMime } from "../media.js";
 import { persistUpload } from "../storage.js";
 import { sendPushToUser } from "../push.js";
 import { onlineUsers, emitToUser } from "../io.js";
@@ -313,14 +313,13 @@ export function conversationsRouter(io: Server) {
         caption: req.body.caption,
         scheduledFor: req.body.scheduledFor || undefined
       });
-      // Trust the resolved media type (browser mimetype, or filename-inferred
-      // when the browser sent a generic one) for both routing and storage.
+      // Trust the resolved type (browser mimetype, or filename-inferred when the
+      // browser sent a generic one) for routing, storage, and bucketing.
       const mime = effectiveMime(req.file.originalname, req.file.mimetype) || req.file.mimetype;
-      const type = mime.startsWith("image/")
-        ? MessageType.IMAGE
-        : mime.startsWith("video/")
-          ? MessageType.VIDEO
-          : MessageType.VOICE;
+      const kind = messageKindForMime(mime);
+      const type = MessageType[kind];
+      // Keep the original filename (display only) for document attachments.
+      const fileName = kind === "FILE" ? path.basename(req.file.originalname || "file").slice(0, 255) : undefined;
 
       const mediaUrl = await persistUpload(req.file);
       const conversationId = String(req.params.conversationId);
@@ -331,6 +330,7 @@ export function conversationsRouter(io: Server) {
         originalMediaUrl: mediaUrl,
         mediaMime: mime,
         mediaSize: req.file.size,
+        fileName,
         scheduledFor: input.scheduledFor ? new Date(input.scheduledFor) : undefined
       });
       if (message.deliveredAt) io.to(conversationId).emit("message:new", message);
@@ -454,7 +454,8 @@ export function conversationsRouter(io: Server) {
         mediaUrl: source.mediaUrl ?? undefined,
         originalMediaUrl: source.originalMediaUrl ?? undefined,
         mediaMime: source.mediaMime ?? undefined,
-        mediaSize: source.mediaSize ?? undefined
+        mediaSize: source.mediaSize ?? undefined,
+        fileName: source.fileName ?? undefined
       });
       io.to(input.toConversationId).emit("message:new", message);
       void notifyMembers(message, NotificationType.MESSAGE).catch((error) => console.error("notifyMembers", error));
@@ -645,6 +646,7 @@ export async function createMessage(
     originalMediaUrl?: string;
     mediaMime?: string;
     mediaSize?: number;
+    fileName?: string;
     scheduledFor?: Date;
   }
 ) {

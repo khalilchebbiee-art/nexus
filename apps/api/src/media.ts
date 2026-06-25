@@ -21,7 +21,19 @@ const MIME_EXTENSIONS: Record<string, string> = {
   "audio/mpeg": ".mp3",
   "audio/mp4": ".m4a",
   "audio/aac": ".aac",
-  "audio/wav": ".wav"
+  "audio/wav": ".wav",
+  "application/pdf": ".pdf",
+  "application/msword": ".doc",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+  "application/vnd.ms-excel": ".xls",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+  "application/vnd.ms-powerpoint": ".ppt",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+  "text/plain": ".txt",
+  "text/csv": ".csv",
+  "application/rtf": ".rtf",
+  "application/zip": ".zip",
+  "application/json": ".json"
 };
 
 // Reverse map: filename extension -> a known media mimetype. Used to recover the
@@ -47,22 +59,51 @@ const EXTENSION_MIME: Record<string, string> = {
   ".m4a": "audio/mp4",
   ".aac": "audio/aac",
   ".wav": "audio/wav",
-  ".ogg": "audio/ogg"
+  ".ogg": "audio/ogg",
+  ".pdf": "application/pdf",
+  ".doc": "application/msword",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".xls": "application/vnd.ms-excel",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".ppt": "application/vnd.ms-powerpoint",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ".txt": "text/plain",
+  ".csv": "text/csv",
+  ".rtf": "application/rtf",
+  ".zip": "application/zip",
+  ".json": "application/json"
 };
 
 const MEDIA_PREFIXES = ["image/", "video/", "audio/"];
+
+// Document mimetypes allowed as FILE attachments. Note: text/html and
+// image/svg+xml are intentionally absent — they could execute script if served
+// inline. (helmet also sends X-Content-Type-Options: nosniff as defence.)
+const DOC_MIMES = new Set(Object.values(EXTENSION_MIME).filter((mime) => mime.startsWith("application/") || mime.startsWith("text/")));
 
 function isMediaMime(mime: string | undefined): boolean {
   return Boolean(mime && MEDIA_PREFIXES.some((prefix) => mime.startsWith(prefix)));
 }
 
-// The mimetype to trust for an upload: the browser's if it's a real media type,
-// otherwise inferred from the filename extension. Empty string when neither
-// identifies a supported media file (caller rejects it).
+function isAllowedMime(mime: string | undefined): boolean {
+  return isMediaMime(mime) || (Boolean(mime) && DOC_MIMES.has(mime as string));
+}
+
+// The mimetype to trust for an upload: the browser's if it's an allowed media
+// or document type, otherwise inferred from the filename extension. Empty
+// string when neither identifies a supported file (caller rejects it).
 export function effectiveMime(originalname: string | undefined, mimetype: string | undefined): string {
-  if (isMediaMime(mimetype)) return mimetype as string;
+  if (isAllowedMime(mimetype)) return mimetype as string;
   const ext = path.extname(originalname ?? "").toLowerCase();
   return EXTENSION_MIME[ext] ?? "";
+}
+
+// Message type bucket for a resolved mimetype.
+export function messageKindForMime(mime: string): "IMAGE" | "VIDEO" | "VOICE" | "FILE" {
+  if (mime.startsWith("image/")) return "IMAGE";
+  if (mime.startsWith("video/")) return "VIDEO";
+  if (mime.startsWith("audio/")) return "VOICE";
+  return "FILE";
 }
 
 export function extensionForMime(mime: string): string {

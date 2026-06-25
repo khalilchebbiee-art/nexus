@@ -19,6 +19,7 @@ enum MessageType {
   IMAGE
   VIDEO
   VOICE
+  FILE
 }
 
 enum ConversationType {
@@ -165,6 +166,8 @@ model Message {
   storageProvider String       @default("local")
   mediaMime      String?
   mediaSize      Int?
+  // Original filename for document/file attachments (display only).
+  fileName       String?
   editedAt       DateTime?
   deletedAt      DateTime?
   scheduledFor   DateTime?

@@ -13,6 +13,7 @@ import {
   CheckCheck,
   ChevronDown,
   Download,
+  FileText,
   Forward,
   Hash,
   Images,
@@ -1890,6 +1891,17 @@ function Media({ message, onReady, onZoom }: { message: Message; onReady?: () =>
       </div>
     );
   }
+  if (message.type === "FILE")
+    return (
+      <a className="media file-attach" href={source} target="_blank" rel="noreferrer" download={message.fileName ?? undefined}>
+        <FileText size={22} />
+        <span className="file-attach-meta">
+          <strong>{message.fileName ?? "File"}</strong>
+          <small>{formatBytes(message.mediaSize) || "Download"}</small>
+        </span>
+        <Download size={16} />
+      </a>
+    );
   if (message.type === "IMAGE")
     return (
       <img
@@ -2045,8 +2057,20 @@ function Composer({
       return;
     }
     setRecordingError("");
-    const type = file.type.startsWith("image/") ? "IMAGE" : file.type.startsWith("video/") ? "VIDEO" : "VOICE";
-    const temp = makeTemp({ type, mediaUrl: URL.createObjectURL(file), mediaMime: file.type, mediaSize: file.size });
+    const type = file.type.startsWith("image/")
+      ? "IMAGE"
+      : file.type.startsWith("video/")
+        ? "VIDEO"
+        : file.type.startsWith("audio/")
+          ? "VOICE"
+          : "FILE";
+    const temp = makeTemp({
+      type,
+      mediaUrl: URL.createObjectURL(file),
+      mediaMime: file.type,
+      mediaSize: file.size,
+      fileName: type === "FILE" ? file.name : null
+    });
     onOptimistic(temp);
     try {
       const { message } = await api.sendMedia(token, conversationId, file, "", undefined);
@@ -2124,7 +2148,13 @@ function Composer({
         </div>
       )}
       <form className="composer" onSubmit={sendText}>
-        <input ref={fileRef} type="file" accept="image/*,video/*,audio/*" hidden onChange={(event) => void sendFile(event.target.files?.[0])} />
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.rtf,.zip,.json"
+          hidden
+          onChange={(event) => void sendFile(event.target.files?.[0])}
+        />
         <button type="button" className="icon-button" onClick={() => fileRef.current?.click()} title="Attach media">
           <Paperclip size={19} />
         </button>
@@ -2747,6 +2777,7 @@ function previewMessage(message: Message) {
   if (message.type === "IMAGE") return "Photo";
   if (message.type === "VIDEO") return "Video";
   if (message.type === "VOICE") return "Voice note";
+  if (message.type === "FILE") return message.fileName ? `📎 ${message.fileName}` : "File";
   return message.body;
 }
 

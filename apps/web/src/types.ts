@@ -38,13 +38,14 @@ export type Message = {
   id: string;
   conversationId: string;
   senderId: string;
-  type: "TEXT" | "IMAGE" | "VIDEO" | "VOICE";
+  type: "TEXT" | "IMAGE" | "VIDEO" | "VOICE" | "FILE";
   body: string;
   mediaUrl: string | null;
   originalMediaUrl: string | null;
   storageProvider: string;
   mediaMime: string | null;
   mediaSize: number | null;
+  fileName?: string | null;
   editedAt: string | null;
   deletedAt: string | null;
   scheduledFor: string | null;

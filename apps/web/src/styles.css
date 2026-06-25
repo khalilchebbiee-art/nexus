@@ -2047,6 +2047,43 @@ body.messenger-active {
   color: var(--danger);
 }
 
+/* ---- File / document attachment chip ---- */
+.file-attach {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 320px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-strong);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.file-attach:hover {
+  border-color: var(--accent);
+}
+
+.file-attach-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.file-attach-meta strong {
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-attach-meta small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 /* ---- Archived chats toggle ---- */
 .archived-toggle {
   display: flex;
