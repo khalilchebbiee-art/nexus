@@ -2032,3 +2032,49 @@ body.messenger-active {
 .ghost-button:hover {
   background: var(--panel-strong);
 }
+
+/* ---- Account deletion (danger zone) ---- */
+.danger-zone {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.danger-zone h3 {
+  color: var(--danger);
+}
+
+/* ---- Archived chats toggle ---- */
+.archived-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin-top: 6px;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.archived-toggle:hover {
+  border-color: var(--line);
+  background: var(--panel-strong);
+}
+
+.archived-toggle .rot {
+  transform: rotate(180deg);
+  margin-left: auto;
+}
+
+.archived-toggle svg:last-child:not(.rot) {
+  margin-left: auto;
+}

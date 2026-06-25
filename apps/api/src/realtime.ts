@@ -42,6 +42,18 @@ export function configureRealtime(io: Server) {
     // Personal room so calls and receipts can target a specific user.
     socket.join(userRoom(userId));
 
+    // Join every conversation the user belongs to, so message:new / receipts /
+    // typing arrive live for ALL chats — not just the one currently open. The
+    // client only renders messages for the active chat and bumps unread badges
+    // for the rest, so receiving these events everywhere is what makes unread
+    // counts and list reordering update in real time.
+    void prisma.conversationMember
+      .findMany({ where: { userId }, select: { conversationId: true } })
+      .then((rows) => {
+        for (const row of rows) socket.join(row.conversationId);
+      })
+      .catch(() => {});
+
     // Presence: announce online to friends.
     const wasOffline = !onlineUsers.has(userId);
     onlineUsers.add(userId);

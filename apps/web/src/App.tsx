@@ -2,11 +2,13 @@ import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useL
 import type React from "react";
 import { io, type Socket } from "socket.io-client";
 import {
+  Archive,
   Ban,
   Bell,
   BellOff,
   CalendarClock,
   Camera,
+  Inbox,
   Check,
   CheckCheck,
   ChevronDown,
@@ -512,6 +514,7 @@ function Messenger({
   const [status, setStatus] = useState("");
   const [callHistoryOpen, setCallHistoryOpen] = useState(false);
   const [pinnedOpen, setPinnedOpen] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [replyTo, setReplyTo] = useState<Message | null>(null);
   const [forwardSource, setForwardSource] = useState<Message | null>(null);
@@ -887,6 +890,21 @@ function Messenger({
     }
   }
 
+  async function toggleArchive(conversation: Conversation) {
+    setConvMenuOpen(false);
+    try {
+      if (conversation.archived) {
+        await api.unarchiveConversation(session.token, conversation.id);
+        patchConversation(conversation.id, { archived: false });
+      } else {
+        await api.archiveConversation(session.token, conversation.id);
+        patchConversation(conversation.id, { archived: true });
+      }
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : "Unable to update archive");
+    }
+  }
+
   async function removeConversation(conversation: Conversation) {
     setConvMenuOpen(false);
     const isGroup = conversation.type !== "DIRECT";
@@ -946,6 +964,33 @@ function Messenger({
       setForwardSource(null);
     }
   }
+
+  const renderConversationItem = (conversation: Conversation) => {
+    const other = conversation.members.find((member) => member.id !== session.user.id) ?? conversation.members[0];
+    const title = conversationTitle(conversation, session.user.id);
+    return (
+      <button
+        key={conversation.id}
+        className={`conversation-item ${conversation.id === selected?.id ? "active" : ""}`}
+        onClick={() => setSelectedId(conversation.id)}
+      >
+        {conversation.type === "DIRECT" ? <PresenceAvatar user={other} /> : <div className="avatar placeholder">{conversation.type === "CHANNEL" ? <Hash size={18} /> : <Users size={18} />}</div>}
+        <span>
+          <strong>{title}</strong>
+          <small>{conversation.lastMessage ? previewMessage(conversation.lastMessage) : "Say hello"}</small>
+        </span>
+        <span className="conversation-meta">
+          {conversation.muted && <BellOff size={13} className="muted-icon" />}
+          {(conversation.unreadCount ?? 0) > 0 && conversation.id !== selected?.id && (
+            <span className="unread-badge">{(conversation.unreadCount ?? 0) > 99 ? "99+" : conversation.unreadCount}</span>
+          )}
+        </span>
+      </button>
+    );
+  };
+
+  const activeConversations = conversations.filter((conversation) => !conversation.archived);
+  const archivedConversations = conversations.filter((conversation) => conversation.archived);
 
   const showTyping = typing && typing.conversationId === selected?.id;
 
@@ -1079,29 +1124,16 @@ function Messenger({
         <section className="panel conversations">
           <h3>Messages</h3>
           {conversations.length === 0 && <p className="empty">Add a friend to open your first private chat.</p>}
-          {conversations.map((conversation) => {
-            const other = conversation.members.find((member) => member.id !== session.user.id) ?? conversation.members[0];
-            const title = conversationTitle(conversation, session.user.id);
-            return (
-              <button
-                key={conversation.id}
-                className={`conversation-item ${conversation.id === selected?.id ? "active" : ""}`}
-                onClick={() => setSelectedId(conversation.id)}
-              >
-                {conversation.type === "DIRECT" ? <PresenceAvatar user={other} /> : <div className="avatar placeholder">{conversation.type === "CHANNEL" ? <Hash size={18} /> : <Users size={18} />}</div>}
-                <span>
-                  <strong>{title}</strong>
-                  <small>{conversation.lastMessage ? previewMessage(conversation.lastMessage) : "Say hello"}</small>
-                </span>
-                <span className="conversation-meta">
-                  {conversation.muted && <BellOff size={13} className="muted-icon" />}
-                  {(conversation.unreadCount ?? 0) > 0 && conversation.id !== selected?.id && (
-                    <span className="unread-badge">{(conversation.unreadCount ?? 0) > 99 ? "99+" : conversation.unreadCount}</span>
-                  )}
-                </span>
+          {activeConversations.map(renderConversationItem)}
+          {archivedConversations.length > 0 && (
+            <>
+              <button className="archived-toggle" onClick={() => setShowArchived((value) => !value)} aria-expanded={showArchived}>
+                <Archive size={14} /> Archived ({archivedConversations.length})
+                <ChevronDown size={14} className={showArchived ? "rot" : ""} />
               </button>
-            );
-          })}
+              {showArchived && archivedConversations.map(renderConversationItem)}
+            </>
+          )}
         </section>
 
         <Suspense fallback={null}>
@@ -1176,6 +1208,9 @@ function Messenger({
                       <button className="menu-item" role="menuitem" onClick={() => toggleMute(selected)}>
                         {selected.muted ? <><Bell size={15} /> Unmute notifications</> : <><BellOff size={15} /> Mute notifications</>}
                       </button>
+                      <button className="menu-item" role="menuitem" onClick={() => toggleArchive(selected)}>
+                        {selected.archived ? <><Inbox size={15} /> Unarchive</> : <><Archive size={15} /> Archive</>}
+                      </button>
                       <button className="menu-item danger" role="menuitem" onClick={() => removeConversation(selected)}>
                         {selected.type === "DIRECT" ? <><Trash2 size={15} /> Delete chat</> : <><LogOut size={15} /> Leave conversation</>}
                       </button>
@@ -1231,6 +1266,7 @@ function Messenger({
           onClose={() => setProfileOpen(false)}
           onSave={(user) => setSession((current) => (current ? { ...current, user } : current))}
           onToken={(token) => setSession((current) => (current ? { ...current, token } : current))}
+          onLogout={onLogout}
         />
       )}
       {forwardSource && (
@@ -2282,12 +2318,14 @@ function ProfileDialog({
   session,
   onClose,
   onSave,
-  onToken
+  onToken,
+  onLogout
 }: {
   session: Session;
   onClose: () => void;
   onSave: (user: User) => void;
   onToken: (token: string) => void;
+  onLogout: () => void;
 }) {
   const [tab, setTab] = useState<"profile" | "security">("profile");
   const [displayName, setDisplayName] = useState(session.user.displayName);
@@ -2305,6 +2343,11 @@ function ProfileDialog({
   const [pwError, setPwError] = useState("");
   const [pwStatus, setPwStatus] = useState("");
   const [changing, setChanging] = useState(false);
+
+  // Delete-account fields.
+  const [deletePassword, setDeletePassword] = useState("");
+  const [deleteError, setDeleteError] = useState("");
+  const [deleting, setDeleting] = useState(false);
 
   async function save(event: React.FormEvent) {
     event.preventDefault();
@@ -2359,6 +2402,20 @@ function ProfileDialog({
       setPwError(err instanceof Error ? err.message : "Unable to change password");
     } finally {
       setChanging(false);
+    }
+  }
+
+  async function deleteAccount(event: React.FormEvent) {
+    event.preventDefault();
+    setDeleteError("");
+    if (!window.confirm("Permanently delete your account? This cannot be undone.")) return;
+    setDeleting(true);
+    try {
+      await api.deleteAccount(session.token, deletePassword);
+      onLogout();
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : "Unable to delete account");
+      setDeleting(false);
     }
   }
 
@@ -2419,6 +2476,19 @@ function ProfileDialog({
             <button className="primary-button" disabled={changing || !currentPassword || newPassword.length < 10}>
               {changing ? "Updating…" : "Update password"}
             </button>
+
+            <div className="danger-zone">
+              <h3><Trash2 size={16} /> Delete account</h3>
+              <p className="muted">This permanently removes your account, messages, and connections. This cannot be undone.</p>
+              <label>
+                Confirm password
+                <input type="password" value={deletePassword} onChange={(event) => setDeletePassword(event.target.value)} autoComplete="current-password" />
+              </label>
+              {deleteError && <p className="error">{deleteError}</p>}
+              <button type="button" className="danger-button" disabled={deleting || !deletePassword} onClick={deleteAccount}>
+                {deleting ? "Deleting…" : "Delete my account"}
+              </button>
+            </div>
           </form>
         )}
       </section>

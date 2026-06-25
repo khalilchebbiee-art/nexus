@@ -144,6 +144,9 @@ model ConversationMember {
   // When set and in the future, notifications/sounds for this conversation are
   // suppressed for this member ("mute"). A far-future value means muted forever.
   mutedUntil      DateTime?
+  // When set, the conversation is filed under "Archived" for this member. Unlike
+  // hiddenAt it is sticky — a new message does not auto-unarchive it.
+  archivedAt      DateTime?
   user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 

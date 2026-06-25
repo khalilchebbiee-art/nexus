@@ -59,6 +59,9 @@ export const api = {
   forgotPassword(email: string) {
     return request<{ ok: true }>("/auth/forgot-password", { method: "POST", body: JSON.stringify({ email }) });
   },
+  deleteAccount(token: string, password: string) {
+    return request<void>("/users/me", { method: "DELETE", body: JSON.stringify({ password }) }, token);
+  },
   resetPassword(input: { email: string; code: string; newPassword: string }) {
     return request<Session>("/auth/reset-password", { method: "POST", body: JSON.stringify(input) });
   },
@@ -132,6 +135,12 @@ export const api = {
   },
   unmuteConversation(token: string, conversationId: string) {
     return request<{ muted: boolean }>(`/conversations/${conversationId}/unmute`, { method: "POST" }, token);
+  },
+  archiveConversation(token: string, conversationId: string) {
+    return request<{ archived: boolean }>(`/conversations/${conversationId}/archive`, { method: "POST" }, token);
+  },
+  unarchiveConversation(token: string, conversationId: string) {
+    return request<{ archived: boolean }>(`/conversations/${conversationId}/unarchive`, { method: "POST" }, token);
   },
   removeMember(token: string, conversationId: string, userId: string) {
     return request<{ conversation: Conversation }>(`/conversations/${conversationId}/members/${userId}`, { method: "DELETE" }, token);

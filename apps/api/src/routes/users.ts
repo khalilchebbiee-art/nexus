@@ -6,7 +6,8 @@ import crypto from "node:crypto";
 import { FriendshipStatus } from "@prisma/client";
 import { prisma } from "../db.js";
 import { requireAuth } from "../auth.js";
-import { keyBackupSchema, profileSchema } from "../validators.js";
+import { deleteAccountSchema, keyBackupSchema, profileSchema } from "../validators.js";
+import { verifyPassword } from "../auth.js";
 import { AppError, handleError, publicUser } from "../utils.js";
 import { extensionForMime } from "../media.js";
 import { persistUpload } from "../storage.js";
@@ -156,6 +157,23 @@ usersRouter.patch("/me", async (req, res) => {
       }
     });
     res.json({ user: publicUser(user) });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+// Permanently delete the caller's account (password-confirmed). Cascades remove
+// memberships, friendships, sent messages, notifications, calls, and keys.
+usersRouter.delete("/me", async (req, res) => {
+  try {
+    const input = deleteAccountSchema.parse(req.body);
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: req.user!.id }, select: { passwordHash: true } });
+    if (!(await verifyPassword(input.password, user.passwordHash))) {
+      res.status(400).json({ message: "Password is incorrect" });
+      return;
+    }
+    await prisma.user.delete({ where: { id: req.user!.id } });
+    res.status(204).end();
   } catch (error) {
     handleError(res, error);
   }

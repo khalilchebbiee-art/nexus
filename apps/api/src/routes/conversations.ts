@@ -92,7 +92,8 @@ export function conversationsRouter(io: Server) {
         const membership = myMembership.get(conversation.id);
         return serializeConversation(conversation, {
           unreadCount: unread.get(conversation.id) ?? 0,
-          muted: Boolean(membership?.mutedUntil && new Date(membership.mutedUntil).getTime() > now)
+          muted: Boolean(membership?.mutedUntil && new Date(membership.mutedUntil).getTime() > now),
+          archived: Boolean(membership?.archivedAt)
         });
       })
     });
@@ -449,6 +450,19 @@ export function conversationsRouter(io: Server) {
     res.json({ muted: false });
   });
 
+  // Archive / unarchive for this member (sticky — new messages don't unarchive).
+  router.post("/:conversationId/archive", async (req, res) => {
+    const conversationId = String(req.params.conversationId);
+    await prisma.conversationMember.updateMany({ where: { userId: req.user!.id, conversationId }, data: { archivedAt: new Date() } });
+    res.json({ archived: true });
+  });
+
+  router.post("/:conversationId/unarchive", async (req, res) => {
+    const conversationId = String(req.params.conversationId);
+    await prisma.conversationMember.updateMany({ where: { userId: req.user!.id, conversationId }, data: { archivedAt: null } });
+    res.json({ archived: false });
+  });
+
   // Leave a group/channel. Direct chats can't be "left" — they're hidden via DELETE.
   router.post("/:conversationId/leave", async (req, res) => {
     const conversationId = String(req.params.conversationId);
@@ -767,7 +781,7 @@ function serializeConversation(
     }>;
     messages?: unknown[];
   },
-  extra: { unreadCount?: number; muted?: boolean } = {}
+  extra: { unreadCount?: number; muted?: boolean; archived?: boolean } = {}
 ) {
   return {
     id: conversation.id,
@@ -785,7 +799,8 @@ function serializeConversation(
     })),
     lastMessage: conversation.messages?.[0] ?? null,
     unreadCount: extra.unreadCount ?? 0,
-    muted: extra.muted ?? false
+    muted: extra.muted ?? false,
+    archived: extra.archived ?? false
   };
 }
 

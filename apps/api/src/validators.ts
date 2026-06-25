@@ -54,6 +54,10 @@ export const forgotPasswordSchema = z.object({
   email: z.string().email().max(254)
 });
 
+export const deleteAccountSchema = z.object({
+  password: z.string().min(1).max(128)
+});
+
 export const resetPasswordSchema = z.object({
   email: z.string().email().max(254),
   code: z.string().regex(/^\d{6}$/),

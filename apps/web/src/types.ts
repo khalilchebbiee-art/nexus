@@ -69,6 +69,7 @@ export type Conversation = {
   lastMessage: Message | null;
   unreadCount?: number;
   muted?: boolean;
+  archived?: boolean;
 };
 
 export type FriendRequest = {
