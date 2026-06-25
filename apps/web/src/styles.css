@@ -899,8 +899,16 @@ body.messenger-active {
   inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  /* Fit the whole frame on desktop so a portrait phone feed isn't blown up and
+     cropped; phones (portrait viewport) keep cover for an edge-to-edge fill. */
+  object-fit: contain;
   background: #05070a;
+}
+
+@media (max-width: 768px) {
+  .call-remote {
+    object-fit: cover;
+  }
 }
 
 .call-poster {

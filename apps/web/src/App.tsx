@@ -199,7 +199,11 @@ export function App() {
     return <AuthScreen onSession={setSession} theme={theme} onThemeChange={setTheme} />;
   }
 
-  return <Messenger session={session} setSession={setSession} onLogout={logout} theme={theme} onThemeChange={setTheme} />;
+  return (
+    <EncryptionProvider token={session.token} user={session.user}>
+      <Messenger session={session} setSession={setSession} onLogout={logout} theme={theme} onThemeChange={setTheme} />
+    </EncryptionProvider>
+  );
 }
 
 function AuthScreen({
@@ -417,6 +421,18 @@ function Messenger({
   const typingTimerRef = useRef<number | null>(null);
   const touchStartRef = useRef<{ x: number; y: number; t: number } | null>(null);
 
+  // Kept in refs so the long-lived socket handler can decrypt a freshly-arrived
+  // message for its notification without being re-created on every change.
+  const { decryptForConversation } = useEncryption();
+  const decryptRef = useRef(decryptForConversation);
+  const conversationsRef = useRef<Conversation[]>([]);
+  useEffect(() => {
+    decryptRef.current = decryptForConversation;
+  }, [decryptForConversation]);
+  useEffect(() => {
+    conversationsRef.current = conversations;
+  });
+
   // Swipe to open the conversation drawer from the left edge, or close it by
   // swiping left — only on mobile widths, ignoring vertical scroll gestures.
   function onShellTouchStart(event: React.TouchEvent) {
@@ -482,14 +498,28 @@ function Messenger({
       const mine = message.senderId === session.user.id;
       if (!mine) {
         playSound("message");
-        showNotification(message.sender?.displayName ?? "New message", previewMessage(message) || "New message", {
-          icon: message.sender?.avatarUrl ?? undefined,
-          tag: message.conversationId,
-          onClick: () => {
-            setSelectedId(message.conversationId);
-            setMobileListOpen(false);
+        // Decrypt the body for the notification so it shows the real text
+        // instead of "Encrypted message" (keys are local; falls back if locked).
+        void (async () => {
+          let preview = previewMessage(message);
+          const convo = conversationsRef.current.find((c) => c.id === message.conversationId);
+          if (convo && message.type === "TEXT" && message.encrypted) {
+            try {
+              const text = await decryptRef.current(convo, message);
+              if (text) preview = text;
+            } catch {
+              /* keep the locked-message fallback */
+            }
           }
-        });
+          showNotification(message.sender?.displayName ?? "New message", preview || "New message", {
+            icon: message.sender?.avatarUrl ?? undefined,
+            tag: message.conversationId,
+            onClick: () => {
+              setSelectedId(message.conversationId);
+              setMobileListOpen(false);
+            }
+          });
+        })();
       }
       // If the new message lands in the conversation we're looking at, mark it read.
       if (message.conversationId === activeConversationRef.current && !mine) {
@@ -679,7 +709,6 @@ function Messenger({
 
   return (
     <CallProvider socket={socket} self={session.user} token={session.token}>
-    <EncryptionProvider token={session.token} user={session.user}>
     <main
       className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}
       onTouchStart={onShellTouchStart}
@@ -910,7 +939,6 @@ function Messenger({
         />
       )}
     </main>
-    </EncryptionProvider>
     </CallProvider>
   );
 }
@@ -1701,7 +1729,16 @@ function CameraDialog({ onClose, onCapture }: { onClose: () => void; onCapture: 
     const canvas = document.createElement("canvas");
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
-    canvas.getContext("2d")?.drawImage(video, 0, 0);
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      // Mirror the front camera so the saved photo matches the mirrored
+      // preview (otherwise the result looks flipped vs. what you saw).
+      if (facing === "user") {
+        ctx.translate(canvas.width, 0);
+        ctx.scale(-1, 1);
+      }
+      ctx.drawImage(video, 0, 0);
+    }
     canvas.toBlob((blob) => {
       if (blob) onCapture(new File([blob], `photo-${Date.now()}.jpg`, { type: "image/jpeg" }));
     }, "image/jpeg", 0.92);
