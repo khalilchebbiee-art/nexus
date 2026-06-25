@@ -38,10 +38,18 @@
   box-sizing: border-box;
 }
 
+html {
+  /* Guard against any single wide child causing horizontal scroll on mobile. */
+  overflow-x: hidden;
+}
+
 body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  min-height: 100dvh;
+  overflow-x: hidden;
+  -webkit-text-size-adjust: 100%;
   background:
     radial-gradient(circle at top left, rgba(85, 214, 167, 0.16), transparent 34rem),
     linear-gradient(140deg, var(--bg), #17191d 60%, var(--bg));
@@ -194,6 +202,14 @@ textarea {
   outline: none;
 }
 
+/* iOS zooms the page when a focused control's font is < 16px. Pin all text
+   entry controls to 16px so focusing an input never triggers a viewport jump. */
+input,
+textarea,
+select {
+  font-size: 16px;
+}
+
 textarea {
   min-height: 96px;
   resize: vertical;
@@ -239,6 +255,8 @@ textarea:focus {
 .app-shell {
   height: 100vh;
   height: 100dvh;
+  /* --app-h tracks the visual viewport so the keyboard never hides the composer. */
+  height: var(--app-h, 100dvh);
   display: grid;
   grid-template-columns: 390px minmax(0, 1fr);
   overflow: hidden;
@@ -250,6 +268,11 @@ textarea:focus {
   padding: 18px;
   overflow-y: auto;
   background: color-mix(in srgb, var(--panel) 90%, var(--bg));
+}
+
+/* Drawer backdrop — only ever visible on mobile (see breakpoint below). */
+.sidebar-backdrop {
+  display: none;
 }
 
 .topbar,
@@ -440,6 +463,8 @@ textarea:focus {
 .chat-header {
   flex: 0 0 auto;
   padding: 16px 22px;
+  padding-left: max(22px, env(safe-area-inset-left));
+  padding-right: max(22px, env(safe-area-inset-right));
   border-bottom: 1px solid var(--line);
   background: color-mix(in srgb, var(--panel) 80%, transparent);
 }
@@ -594,6 +619,10 @@ textarea:focus {
   flex: 0 0 auto;
   gap: 10px;
   padding: 16px 22px 20px;
+  /* Keep the input clear of the home indicator / gesture bar. */
+  padding-bottom: max(20px, calc(16px + env(safe-area-inset-bottom)));
+  padding-left: max(22px, env(safe-area-inset-left));
+  padding-right: max(22px, env(safe-area-inset-right));
   border-top: 1px solid var(--line);
   background: color-mix(in srgb, var(--panel) 82%, transparent);
 }
@@ -685,12 +714,18 @@ textarea:focus {
   display: grid;
   place-items: center;
   padding: 24px;
+  padding-top: max(24px, env(safe-area-inset-top));
+  padding-bottom: max(24px, env(safe-area-inset-bottom));
   background: rgba(0, 0, 0, 0.52);
-  z-index: 20;
+  z-index: 35;
 }
 
 .dialog {
   width: min(460px, 100%);
+  /* Never taller than the viewport — scroll inside instead of overflowing
+     (covers short landscape phones and tall forms). */
+  max-height: calc(100dvh - 48px);
+  overflow-y: auto;
   display: grid;
   gap: 16px;
   border-radius: 8px;
@@ -944,6 +979,7 @@ textarea:focus {
   flex-wrap: wrap;
   gap: 14px;
   padding: 22px;
+  padding-bottom: max(22px, calc(18px + env(safe-area-inset-bottom)));
 }
 
 .call-button {
@@ -1491,8 +1527,8 @@ textarea:focus {
   }
 
   .chat-tools .icon-button {
-    width: 34px;
-    height: 34px;
+    width: 40px;
+    height: 40px;
   }
 
   .chat-header {
@@ -1516,8 +1552,8 @@ textarea:focus {
   }
 
   .composer .icon-button {
-    width: 38px;
-    height: 38px;
+    width: 42px;
+    height: 42px;
   }
 
   .message {
@@ -1540,8 +1576,8 @@ textarea:focus {
   }
 
   .top-actions .icon-button {
-    width: 34px;
-    height: 34px;
+    width: 40px;
+    height: 40px;
   }
 
   .chat-header .identity strong {
@@ -1589,9 +1625,12 @@ textarea:focus {
     position: fixed;
     inset: 0 auto 0 0;
     width: min(390px, 92vw);
+    padding-top: max(18px, env(safe-area-inset-top));
+    padding-bottom: max(18px, env(safe-area-inset-bottom));
+    padding-left: max(18px, env(safe-area-inset-left));
     transform: translateX(-104%);
-    transition: transform 180ms ease;
-    z-index: 10;
+    transition: transform 200ms ease;
+    z-index: 30;
     box-shadow: var(--shadow);
   }
 
@@ -1599,8 +1638,31 @@ textarea:focus {
     transform: translateX(0);
   }
 
+  .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    background: rgba(0, 0, 0, 0.5);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 200ms ease;
+  }
+
+  .sidebar-backdrop.show {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
   .mobile-menu {
     display: inline-grid;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar,
+  .sidebar-backdrop {
+    transition: none;
   }
 }
 
@@ -1616,8 +1678,8 @@ textarea:focus {
 
   .chat-header,
   .composer {
-    padding-left: 10px;
-    padding-right: 10px;
+    padding-left: max(10px, env(safe-area-inset-left));
+    padding-right: max(10px, env(safe-area-inset-right));
   }
 
   .message-list {
@@ -1626,5 +1688,85 @@ textarea:focus {
 
   .message {
     max-width: 92%;
+  }
+}
+
+/* ===== Mobile Phase 2: motion, sheets, momentum scrolling ===== */
+.message-list,
+.call-history-list,
+.member-picker,
+.gallery-grid,
+.dialog {
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Subtle, GPU-cheap entrance for dialogs and new messages. */
+.dialog-backdrop {
+  animation: fade-in 160ms ease;
+}
+
+.dialog {
+  animation: dialog-in 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.message {
+  animation: msg-in 200ms ease both;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes dialog-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes msg-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes sheet-up {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+
+/* Bottom-sheet presentation on phones — anchored, full-width, slides up. */
+@media (max-width: 560px) {
+  .dialog-backdrop {
+    place-items: end stretch;
+    padding: 0;
+  }
+
+  .dialog {
+    width: 100%;
+    max-width: 100%;
+    max-height: 92dvh;
+    border-radius: 18px 18px 0 0;
+    padding-bottom: max(22px, calc(18px + env(safe-area-inset-bottom)));
+    animation: sheet-up 260ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  /* Grab handle affordance at the top of each sheet. */
+  .dialog::before {
+    content: "";
+    position: sticky;
+    top: 0;
+    display: block;
+    width: 38px;
+    height: 4px;
+    margin: -4px auto 6px;
+    border-radius: 999px;
+    background: var(--line);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dialog-backdrop,
+  .dialog,
+  .message {
+    animation: none;
   }
 }

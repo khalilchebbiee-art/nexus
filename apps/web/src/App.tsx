@@ -71,6 +71,77 @@ function peerWithKey(conversation: Conversation, currentUserId: string) {
   return peer?.publicKey ? peer : null;
 }
 
+const FOCUSABLE = 'a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])';
+
+// Shared modal wrapper: focus trap, Escape-to-close, click-outside, and focus
+// restoration. Replaces the bare `.dialog-backdrop` divs so every dialog is
+// keyboard-accessible and behaves like a native sheet on mobile.
+function ModalShell({
+  onClose,
+  children,
+  className,
+  dismissable = true
+}: {
+  onClose: () => void;
+  children: React.ReactNode;
+  className?: string;
+  dismissable?: boolean;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const node = ref.current;
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    const visibleFocusables = () =>
+      node ? Array.from(node.querySelectorAll<HTMLElement>(FOCUSABLE)).filter((el) => el.offsetParent !== null) : [];
+
+    // Respect a child's autoFocus (its effect already ran); otherwise focus the first control.
+    if (node && !node.contains(document.activeElement)) {
+      visibleFocusables()[0]?.focus();
+    }
+
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape" && dismissable) {
+        event.stopPropagation();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const items = visibleFocusables();
+      if (items.length === 0) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+
+    document.addEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("keydown", onKey, true);
+      previouslyFocused?.focus?.();
+    };
+  }, [onClose, dismissable]);
+
+  return (
+    <div
+      ref={ref}
+      className={`dialog-backdrop ${className ?? ""}`}
+      role="dialog"
+      aria-modal="true"
+      onMouseDown={(event) => {
+        if (dismissable && event.target === event.currentTarget) onClose();
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
 export function App() {
   const [session, setSession] = useState<Session | null>(() => {
     const saved = localStorage.getItem("nexus-session");
@@ -83,6 +154,29 @@ export function App() {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("nexus-theme", theme);
   }, [theme]);
+
+  // Keep the app height locked to the *visual* viewport so the on-screen
+  // keyboard pushes the composer up instead of hiding it (iOS Safari / Android).
+  // `dvh` alone doesn't shrink for the keyboard, so we track visualViewport.
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const root = document.documentElement;
+    const apply = () => {
+      root.style.setProperty("--app-h", `${Math.round(vv.height)}px`);
+      // Offset for when the keyboard scrolls the visual viewport off the top.
+      root.style.setProperty("--vv-offset", `${Math.round(vv.offsetTop)}px`);
+    };
+    apply();
+    vv.addEventListener("resize", apply);
+    vv.addEventListener("scroll", apply);
+    return () => {
+      vv.removeEventListener("resize", apply);
+      vv.removeEventListener("scroll", apply);
+      root.style.removeProperty("--app-h");
+      root.style.removeProperty("--vv-offset");
+    };
+  }, []);
 
   useEffect(() => {
     if (!token) return;
@@ -318,6 +412,25 @@ function Messenger({
   const socketRef = useRef<Socket | null>(null);
   const activeConversationRef = useRef("");
   const typingTimerRef = useRef<number | null>(null);
+  const touchStartRef = useRef<{ x: number; y: number; t: number } | null>(null);
+
+  // Swipe to open the conversation drawer from the left edge, or close it by
+  // swiping left — only on mobile widths, ignoring vertical scroll gestures.
+  function onShellTouchStart(event: React.TouchEvent) {
+    const touch = event.touches[0];
+    touchStartRef.current = { x: touch.clientX, y: touch.clientY, t: Date.now() };
+  }
+  function onShellTouchEnd(event: React.TouchEvent) {
+    const start = touchStartRef.current;
+    touchStartRef.current = null;
+    if (!start || window.innerWidth > 900) return;
+    const touch = event.changedTouches[0];
+    const dx = touch.clientX - start.x;
+    const dy = touch.clientY - start.y;
+    if (Math.abs(dx) < 60 || Math.abs(dy) > 50 || Date.now() - start.t > 600) return;
+    if (dx > 0 && start.x < 32 && !mobileListOpen) setMobileListOpen(true);
+    else if (dx < 0 && mobileListOpen) setMobileListOpen(false);
+  }
 
   // Merge a presence change into both conversation members and the friends list.
   const applyPresence = useCallback((p: PresenceUpdate) => {
@@ -426,6 +539,16 @@ function Messenger({
     unlockAudio();
   }, []);
 
+  // Close the mobile conversation drawer with Escape.
+  useEffect(() => {
+    if (!mobileListOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMobileListOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [mobileListOpen]);
+
   useEffect(() => {
     if (!selected?.id) return;
     activeConversationRef.current = selected.id;
@@ -521,12 +644,21 @@ function Messenger({
   return (
     <CallProvider socket={socket} self={session.user} token={session.token}>
     <EncryptionProvider token={session.token} user={session.user}>
-    <main className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+    <main
+      className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}
+      onTouchStart={onShellTouchStart}
+      onTouchEnd={onShellTouchEnd}
+    >
       {sidebarCollapsed && (
         <button className="icon-button sidebar-reveal" onClick={() => setSidebarCollapsed(false)} title="Show panel">
           <PanelLeftOpen size={18} />
         </button>
       )}
+      <div
+        className={`sidebar-backdrop ${mobileListOpen ? "show" : ""}`}
+        onClick={() => setMobileListOpen(false)}
+        aria-hidden="true"
+      />
       <aside className={`sidebar ${mobileListOpen ? "open" : ""}`}>
         <div className="topbar">
           <div className="identity">
@@ -781,7 +913,7 @@ function CallHistoryDialog({
   }, [token, scope, conversationId]);
 
   return (
-    <div className="dialog-backdrop">
+    <ModalShell onClose={onClose}>
       <section className="dialog call-history-dialog">
         <div className="dialog-head">
           <h2>Call history</h2>
@@ -829,7 +961,7 @@ function CallHistoryDialog({
           })}
         </div>
       </section>
-    </div>
+    </ModalShell>
   );
 }
 
@@ -966,7 +1098,7 @@ function UnlockDialog({ onUnlock, onSkip }: { onUnlock: (password: string) => Pr
   }
 
   return (
-    <div className="dialog-backdrop">
+    <ModalShell onClose={onSkip}>
       <form className="dialog" onSubmit={submit}>
         <div className="dialog-head">
           <h2><Lock size={18} /> Unlock encryption</h2>
@@ -982,7 +1114,7 @@ function UnlockDialog({ onUnlock, onSkip }: { onUnlock: (password: string) => Pr
         <button className="primary-button" disabled={loading || !password}>{loading ? "Unlocking..." : "Unlock"}</button>
         <button type="button" className="link-button" onClick={onSkip}>Skip for now</button>
       </form>
-    </div>
+    </ModalShell>
   );
 }
 
@@ -1520,7 +1652,7 @@ function CameraDialog({ onClose, onCapture }: { onClose: () => void; onCapture: 
   }
 
   return (
-    <div className="dialog-backdrop">
+    <ModalShell onClose={onClose}>
       <section className="dialog camera-dialog">
         <div className="dialog-head">
           <h2><Camera size={18} /> Camera</h2>
@@ -1535,7 +1667,7 @@ function CameraDialog({ onClose, onCapture }: { onClose: () => void; onCapture: 
           </>
         )}
       </section>
-    </div>
+    </ModalShell>
   );
 }
 
@@ -1556,7 +1688,7 @@ function PinnedDialog({
   }, [token, conversation.id]);
 
   return (
-    <div className="dialog-backdrop">
+    <ModalShell onClose={onClose}>
       <section className="dialog">
         <div className="dialog-head">
           <h2><Pin size={18} /> Pinned messages</h2>
@@ -1577,7 +1709,7 @@ function PinnedDialog({
           ))}
         </div>
       </section>
-    </div>
+    </ModalShell>
   );
 }
 
@@ -1621,7 +1753,7 @@ function ProfileDialog({
   }
 
   return (
-    <div className="dialog-backdrop">
+    <ModalShell onClose={onClose}>
       <form className="dialog" onSubmit={save}>
         <div className="dialog-head">
           <h2>Profile</h2>
@@ -1641,7 +1773,7 @@ function ProfileDialog({
         </label>
         <button className="primary-button">Save profile</button>
       </form>
-    </div>
+    </ModalShell>
   );
 }
 
@@ -1668,7 +1800,7 @@ function CreateConversationDialog({
   }
 
   return (
-    <div className="dialog-backdrop">
+    <ModalShell onClose={onClose}>
       <form className="dialog" onSubmit={submit}>
         <div className="dialog-head">
           <h2>Create space</h2>
@@ -1707,7 +1839,7 @@ function CreateConversationDialog({
         </div>
         <button className="primary-button" disabled={loading}>{loading ? "Creating..." : "Create"}</button>
       </form>
-    </div>
+    </ModalShell>
   );
 }
 
@@ -1722,7 +1854,7 @@ function GalleryDialog({ token, conversation, onClose }: { token: string; conver
   const filtered = filter === "ALL" ? media : media.filter((message) => message.type === filter);
 
   return (
-    <div className="dialog-backdrop">
+    <ModalShell onClose={onClose}>
       <section className="dialog gallery-dialog">
         <div className="dialog-head">
           <h2>Media gallery</h2>
@@ -1747,7 +1879,7 @@ function GalleryDialog({ token, conversation, onClose }: { token: string; conver
           {filtered.length === 0 && <p className="empty">No media shared here yet.</p>}
         </div>
       </section>
-    </div>
+    </ModalShell>
   );
 }
 
