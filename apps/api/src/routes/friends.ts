@@ -13,6 +13,22 @@ function withPresence(user: Parameters<typeof publicUser>[0] & { lastSeenAt?: Da
   return { ...publicUser(user), online: onlineUsers.has(user.id), lastSeenAt: user.lastSeenAt ?? null };
 }
 
+// True when either user has blocked the other. Used to gate friend requests,
+// search visibility, and direct messaging. Exported for reuse elsewhere.
+export async function blockedBetween(a: string, b: string): Promise<boolean> {
+  const row = await prisma.friendship.findFirst({
+    where: {
+      status: FriendshipStatus.BLOCKED,
+      OR: [
+        { requesterId: a, receiverId: b },
+        { requesterId: b, receiverId: a }
+      ]
+    },
+    select: { id: true }
+  });
+  return Boolean(row);
+}
+
 friendsRouter.get("/", async (req, res) => {
   const rows = await prisma.friendship.findMany({
     where: {
@@ -54,6 +70,10 @@ friendsRouter.post("/:userId/request", async (req, res) => {
   });
 
   if (existing) {
+    if (existing.status === FriendshipStatus.BLOCKED) {
+      res.status(403).json({ message: "Unable to send request" });
+      return;
+    }
     res.status(409).json({ message: "Friend request already exists" });
     return;
   }
@@ -98,4 +118,70 @@ friendsRouter.post("/requests/:requestId/decline", async (req, res) => {
     data: { status: FriendshipStatus.DECLINED }
   });
   res.status(204).end();
+});
+
+// Remove a relationship: unfriend, cancel an outgoing request, or clear a
+// previously declined one. Blocks are intentionally untouched here — they are
+// only lifted via /unblock so a user can't quietly drop someone's block on them.
+friendsRouter.delete("/:userId", async (req, res) => {
+  const otherId = req.params.userId;
+  const result = await prisma.friendship.deleteMany({
+    where: {
+      status: { not: FriendshipStatus.BLOCKED },
+      OR: [
+        { requesterId: req.user!.id, receiverId: otherId },
+        { requesterId: otherId, receiverId: req.user!.id }
+      ]
+    }
+  });
+  if (result.count > 0) emitToUser(otherId, "friend:removed", { userId: req.user!.id });
+  res.status(204).end();
+});
+
+// Block a user. Any existing relationship is converted to a block owned by the
+// caller (direction encodes who blocked whom).
+friendsRouter.post("/:userId/block", async (req, res) => {
+  const otherId = req.params.userId;
+  if (otherId === req.user!.id) {
+    res.status(400).json({ message: "You cannot block yourself" });
+    return;
+  }
+  const existing = await prisma.friendship.findFirst({
+    where: {
+      OR: [
+        { requesterId: req.user!.id, receiverId: otherId },
+        { requesterId: otherId, receiverId: req.user!.id }
+      ]
+    }
+  });
+  if (existing) {
+    await prisma.friendship.update({
+      where: { id: existing.id },
+      data: { requesterId: req.user!.id, receiverId: otherId, status: FriendshipStatus.BLOCKED }
+    });
+  } else {
+    await prisma.friendship.create({
+      data: { requesterId: req.user!.id, receiverId: otherId, status: FriendshipStatus.BLOCKED }
+    });
+  }
+  emitToUser(otherId, "friend:removed", { userId: req.user!.id });
+  res.json({ ok: true });
+});
+
+// Unblock — only the user who created the block can lift it.
+friendsRouter.post("/:userId/unblock", async (req, res) => {
+  await prisma.friendship.deleteMany({
+    where: { requesterId: req.user!.id, receiverId: req.params.userId, status: FriendshipStatus.BLOCKED }
+  });
+  res.json({ ok: true });
+});
+
+// Users the caller has blocked (for a privacy/settings screen).
+friendsRouter.get("/blocked", async (req, res) => {
+  const rows = await prisma.friendship.findMany({
+    where: { requesterId: req.user!.id, status: FriendshipStatus.BLOCKED },
+    include: { receiver: true },
+    orderBy: { updatedAt: "desc" }
+  });
+  res.json({ blocked: rows.map((row) => publicUser(row.receiver)) });
 });

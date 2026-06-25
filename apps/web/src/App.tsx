@@ -1,21 +1,29 @@
-import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import { io, type Socket } from "socket.io-client";
 import {
+  Archive,
+  Ban,
+  Bell,
+  BellOff,
   CalendarClock,
   Camera,
+  Inbox,
   Check,
   CheckCheck,
   ChevronDown,
   Download,
+  Forward,
   Hash,
   Images,
+  KeyRound,
   Lock,
   LogOut,
   Menu,
   MessageCircle,
   Mic,
   Moon,
+  MoreVertical,
   Paperclip,
   PanelLeftClose,
   PanelLeftOpen,
@@ -31,6 +39,8 @@ import {
   Sun,
   SwitchCamera,
   Trash2,
+  Upload,
+  UserMinus,
   UserPlus,
   Users,
   Video,
@@ -38,7 +48,7 @@ import {
 } from "lucide-react";
 import { api, type Session } from "./api";
 import { CallProvider, useCall } from "./call";
-import { decryptText, deriveConversationKey, encryptText, loadLocalPrivateKey, setupKeys, WrongPasswordError } from "./e2ee";
+import { clearLocalPrivateKey, decryptText, deriveConversationKey, encryptText, loadLocalPrivateKey, rewrapLocalPrivateKey, setupKeys, WrongPasswordError } from "./e2ee";
 import { ensureNotificationPermission, playSound, showNotification, unlockAudio } from "./notify";
 import { registerPush } from "./push";
 // Code-split: the prayer-times panel pulls in the `adhan` library, which is
@@ -232,7 +242,7 @@ function AuthScreen({
   onThemeChange: (theme: string) => void;
 }) {
   const [mode, setMode] = useState<"login" | "register">("login");
-  const [step, setStep] = useState<"credentials" | "verify">("credentials");
+  const [step, setStep] = useState<"credentials" | "verify" | "forgot" | "reset">("credentials");
   const [error, setError] = useState("");
   const [info, setInfo] = useState("");
   const [loading, setLoading] = useState(false);
@@ -316,6 +326,47 @@ function AuthScreen({
     }
   }
 
+  async function submitForgot(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError("");
+    setInfo("");
+    setLoading(true);
+    const email = String(new FormData(event.currentTarget).get("email"));
+    try {
+      await api.forgotPassword(email);
+      setPendingEmail(email);
+      setStep("reset");
+      setInfo(`If an account exists for ${email}, a reset code is on its way.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to send reset code");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function submitReset(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError("");
+    setLoading(true);
+    const data = new FormData(event.currentTarget);
+    try {
+      const result = await api.resetPassword({
+        email: pendingEmail,
+        code: String(data.get("code")).trim(),
+        newPassword: String(data.get("password"))
+      });
+      // The reset clears E2EE keys server-side; drop any stale local key so
+      // provisioning regenerates a fresh identity under the new password.
+      await clearLocalPrivateKey(result.user.id);
+      await provisionKeys(result, String(data.get("password")));
+      onSession(result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to reset password");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <main className="auth-page">
       <button className="icon-button theme-float" onClick={() => onThemeChange(theme === "dark" ? "light" : "dark")}>
@@ -350,6 +401,36 @@ function AuthScreen({
               <button type="button" className="link-button" onClick={resend}>Resend code</button>
               <button type="button" className="link-button" onClick={() => switchMode("register")}>Start over</button>
             </div>
+          </form>
+        ) : step === "forgot" ? (
+          <form className="auth-card" onSubmit={submitForgot}>
+            <h2>Reset your password</h2>
+            <p className="muted">Enter your account email and we'll send a 6-digit reset code.</p>
+            <label>
+              Email
+              <input name="email" type="email" autoComplete="email" required autoFocus />
+            </label>
+            {info && <p className="status">{info}</p>}
+            {error && <p className="error">{error}</p>}
+            <button className="primary-button" disabled={loading}>{loading ? "Sending..." : "Send reset code"}</button>
+            <button type="button" className="link-button" onClick={() => { setStep("credentials"); setError(""); setInfo(""); }}>Back to login</button>
+          </form>
+        ) : step === "reset" ? (
+          <form className="auth-card" onSubmit={submitReset}>
+            <h2>Enter reset code</h2>
+            <p className="muted">Enter the code we emailed and choose a new password. Resetting clears encrypted message history on this account.</p>
+            <label>
+              Reset code
+              <input name="code" inputMode="numeric" autoComplete="one-time-code" pattern="\d{6}" maxLength={6} placeholder="000000" required autoFocus />
+            </label>
+            <label>
+              New password
+              <input name="password" type="password" autoComplete="new-password" minLength={10} required />
+            </label>
+            {info && <p className="status">{info}</p>}
+            {error && <p className="error">{error}</p>}
+            <button className="primary-button" disabled={loading}>{loading ? "Resetting..." : "Reset & enter"}</button>
+            <button type="button" className="link-button" onClick={() => { setStep("forgot"); setError(""); }}>Use a different email</button>
           </form>
         ) : (
           <form className="auth-card" onSubmit={submit}>
@@ -392,6 +473,11 @@ function AuthScreen({
             <button className="primary-button" disabled={loading}>
               {loading ? "Working..." : mode === "login" ? "Enter Nexus" : "Create account"}
             </button>
+            {mode === "login" && (
+              <button type="button" className="link-button" onClick={() => { setStep("forgot"); setError(""); setInfo(""); }}>
+                Forgot password?
+              </button>
+            )}
           </form>
         )}
       </section>
@@ -428,14 +514,20 @@ function Messenger({
   const [status, setStatus] = useState("");
   const [callHistoryOpen, setCallHistoryOpen] = useState(false);
   const [pinnedOpen, setPinnedOpen] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [replyTo, setReplyTo] = useState<Message | null>(null);
+  const [forwardSource, setForwardSource] = useState<Message | null>(null);
+  const [convMenuOpen, setConvMenuOpen] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
   const [typing, setTyping] = useState<{ conversationId: string; name: string } | null>(null);
   const [socket, setSocket] = useState<Socket | null>(null);
   const socketRef = useRef<Socket | null>(null);
   const activeConversationRef = useRef("");
   const typingTimerRef = useRef<number | null>(null);
   const touchStartRef = useRef<{ x: number; y: number; t: number } | null>(null);
+  const messagesRef = useRef<Message[]>([]);
+  messagesRef.current = messages;
 
   // Kept in refs so the long-lived socket handler can decrypt a freshly-arrived
   // message for its notification without being re-created on every change.
@@ -517,15 +609,19 @@ function Messenger({
       }
     });
     socket.on("message:new", (message: Message) => {
-      setMessages((current) => (current.some((item) => item.id === message.id) ? current : [...current, message]));
+      const isActive = message.conversationId === activeConversationRef.current;
+      if (isActive) {
+        setMessages((current) => (current.some((item) => item.id === message.id) ? current : [...current, message]));
+      }
       const mine = message.senderId === session.user.id;
-      if (!mine) {
+      const convo = conversationsRef.current.find((c) => c.id === message.conversationId);
+      const muted = Boolean(convo?.muted);
+      if (!mine && !muted) {
         playSound("message");
         // Decrypt the body for the notification so it shows the real text
         // instead of "Encrypted message" (keys are local; falls back if locked).
         void (async () => {
           let preview = previewMessage(message);
-          const convo = conversationsRef.current.find((c) => c.id === message.conversationId);
           if (convo && message.type === "TEXT" && message.encrypted) {
             try {
               const text = await decryptRef.current(convo, message);
@@ -545,18 +641,20 @@ function Messenger({
         })();
       }
       // If the new message lands in the conversation we're looking at, mark it read.
-      if (message.conversationId === activeConversationRef.current && !mine) {
+      if (isActive && !mine) {
         socket.emit("conversation:read", message.conversationId);
       }
-      // Patch the conversation list locally (update preview + move to top)
-      // instead of refetching the whole list on every single message.
+      // Patch the conversation list locally (update preview, bump unread, move to
+      // top) instead of refetching the whole list on every single message.
       setConversations((current) => {
         const index = current.findIndex((c) => c.id === message.conversationId);
         if (index === -1) {
-          void loadConversations(); // a conversation we don't know about yet
+          void loadConversations(); // a conversation we don't know about (or was hidden)
           return current;
         }
-        const updated = { ...current[index], lastMessage: message };
+        const convoItem = current[index];
+        const unreadCount = mine || isActive ? convoItem.unreadCount ?? 0 : (convoItem.unreadCount ?? 0) + 1;
+        const updated = { ...convoItem, lastMessage: message, unreadCount: isActive ? 0 : unreadCount };
         return [updated, ...current.filter((_, i) => i !== index)];
       });
     });
@@ -604,6 +702,16 @@ function Messenger({
         )
       );
     });
+    socket.on("friend:removed", ({ userId }: { userId: string }) => {
+      setFriends((current) => current.filter((friend) => friend.id !== userId));
+    });
+    socket.on("conversation:removed", ({ conversationId }: { conversationId: string }) => {
+      setConversations((current) => current.filter((conversation) => conversation.id !== conversationId));
+      setSelectedId((current) => (current === conversationId ? "" : current));
+    });
+    socket.on("conversation:updated", (conversation: Conversation) => {
+      setConversations((current) => current.map((item) => (item.id === conversation.id ? { ...item, ...conversation } : item)));
+    });
     return () => {
       socket.disconnect();
       setSocket(null);
@@ -645,11 +753,20 @@ function Messenger({
     activeConversationRef.current = conversationId;
     socketRef.current?.emit("conversation:join", conversationId);
     socketRef.current?.emit("conversation:read", conversationId);
+    // Opening a chat clears its unread badge locally (the server is told via the
+    // conversation:read emit above).
+    setConversations((current) =>
+      current.map((conversation) => (conversation.id === conversationId ? { ...conversation, unreadCount: 0 } : conversation))
+    );
     // Guard against out-of-order responses when switching chats quickly: only
     // apply messages that still belong to the conversation in view.
     let active = true;
-    void api.messages(session.token, conversationId).then(({ messages }) => {
-      if (active && activeConversationRef.current === conversationId) setMessages(messages);
+    setHasMore(false);
+    void api.messages(session.token, conversationId).then(({ messages, hasMore }) => {
+      if (active && activeConversationRef.current === conversationId) {
+        setMessages(messages);
+        setHasMore(hasMore);
+      }
     });
     setMobileListOpen(false);
     return () => {
@@ -657,6 +774,24 @@ function Messenger({
       activeConversationRef.current = "";
     };
   }, [selected?.id, session.token]);
+
+  // Page backwards through history for infinite scroll-up. Reads the current
+  // messages from a ref so its identity stays stable across renders.
+  const loadOlder = useCallback(async () => {
+    const conversationId = activeConversationRef.current;
+    const oldest = messagesRef.current[0];
+    if (!conversationId || !oldest) return;
+    const { messages: older, hasMore: more } = await api.messages(session.token, conversationId, oldest.id);
+    if (activeConversationRef.current !== conversationId) return;
+    setHasMore(more);
+    if (older.length > 0) {
+      setMessages((current) => {
+        const known = new Set(current.map((message) => message.id));
+        const fresh = older.filter((message) => !known.has(message.id));
+        return fresh.length > 0 ? [...fresh, ...current] : current;
+      });
+    }
+  }, [session.token]);
 
   useEffect(() => {
     const handle = window.setTimeout(() => {
@@ -735,6 +870,127 @@ function Messenger({
     const { message: updated } = await api.pinMessage(session.token, message.conversationId, message.id);
     setMessages((current) => current.map((m) => (m.id === updated.id ? updated : m)));
   }
+
+  function patchConversation(conversationId: string, patch: Partial<Conversation>) {
+    setConversations((current) => current.map((c) => (c.id === conversationId ? { ...c, ...patch } : c)));
+  }
+
+  async function toggleMute(conversation: Conversation) {
+    setConvMenuOpen(false);
+    try {
+      if (conversation.muted) {
+        await api.unmuteConversation(session.token, conversation.id);
+        patchConversation(conversation.id, { muted: false });
+      } else {
+        await api.muteConversation(session.token, conversation.id);
+        patchConversation(conversation.id, { muted: true });
+      }
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : "Unable to update mute");
+    }
+  }
+
+  async function toggleArchive(conversation: Conversation) {
+    setConvMenuOpen(false);
+    try {
+      if (conversation.archived) {
+        await api.unarchiveConversation(session.token, conversation.id);
+        patchConversation(conversation.id, { archived: false });
+      } else {
+        await api.archiveConversation(session.token, conversation.id);
+        patchConversation(conversation.id, { archived: true });
+      }
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : "Unable to update archive");
+    }
+  }
+
+  async function removeConversation(conversation: Conversation) {
+    setConvMenuOpen(false);
+    const isGroup = conversation.type !== "DIRECT";
+    const prompt = isGroup ? "Leave this conversation?" : "Delete this chat? It will reappear if you receive a new message.";
+    if (!window.confirm(prompt)) return;
+    try {
+      await api.deleteConversation(session.token, conversation.id);
+      setConversations((current) => current.filter((c) => c.id !== conversation.id));
+      setSelectedId((current) => (current === conversation.id ? "" : current));
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : "Unable to remove conversation");
+    }
+  }
+
+  async function unfriend(user: User) {
+    if (!window.confirm(`Remove ${user.displayName} from your friends?`)) return;
+    try {
+      await api.removeFriend(session.token, user.id);
+      setFriends((current) => current.filter((f) => f.id !== user.id));
+      setResults((current) => current.map((u) => (u.id === user.id ? { ...u, friendshipStatus: null, outgoing: false } : u)));
+      setStatus("Friend removed");
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : "Unable to remove friend");
+    }
+  }
+
+  async function cancelRequest(user: User) {
+    try {
+      await api.removeFriend(session.token, user.id);
+      setResults((current) => current.map((u) => (u.id === user.id ? { ...u, friendshipStatus: null, outgoing: false } : u)));
+      setStatus("Request canceled");
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : "Unable to cancel request");
+    }
+  }
+
+  async function blockUser(user: User) {
+    if (!window.confirm(`Block ${user.displayName}? They won't be able to message you and will be removed from your friends.`)) return;
+    try {
+      await api.blockUser(session.token, user.id);
+      setFriends((current) => current.filter((f) => f.id !== user.id));
+      setResults((current) => current.filter((u) => u.id !== user.id));
+      setStatus(`${user.displayName} blocked`);
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : "Unable to block user");
+    }
+  }
+
+  async function doForward(toConversationId: string) {
+    if (!forwardSource) return;
+    try {
+      await api.forwardMessage(session.token, forwardSource.conversationId, forwardSource.id, toConversationId);
+      setStatus("Message forwarded");
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : "Unable to forward");
+    } finally {
+      setForwardSource(null);
+    }
+  }
+
+  const renderConversationItem = (conversation: Conversation) => {
+    const other = conversation.members.find((member) => member.id !== session.user.id) ?? conversation.members[0];
+    const title = conversationTitle(conversation, session.user.id);
+    return (
+      <button
+        key={conversation.id}
+        className={`conversation-item ${conversation.id === selected?.id ? "active" : ""}`}
+        onClick={() => setSelectedId(conversation.id)}
+      >
+        {conversation.type === "DIRECT" ? <PresenceAvatar user={other} /> : <div className="avatar placeholder">{conversation.type === "CHANNEL" ? <Hash size={18} /> : <Users size={18} />}</div>}
+        <span>
+          <strong>{title}</strong>
+          <small>{conversation.lastMessage ? previewMessage(conversation.lastMessage) : "Say hello"}</small>
+        </span>
+        <span className="conversation-meta">
+          {conversation.muted && <BellOff size={13} className="muted-icon" />}
+          {(conversation.unreadCount ?? 0) > 0 && conversation.id !== selected?.id && (
+            <span className="unread-badge">{(conversation.unreadCount ?? 0) > 99 ? "99+" : conversation.unreadCount}</span>
+          )}
+        </span>
+      </button>
+    );
+  };
+
+  const activeConversations = conversations.filter((conversation) => !conversation.archived);
+  const archivedConversations = conversations.filter((conversation) => conversation.archived);
 
   const showTyping = typing && typing.conversationId === selected?.id;
 
@@ -819,9 +1075,31 @@ function Messenger({
         {results.length > 0 && (
           <section className="panel">
             <h3>People</h3>
-            {results.map((user) => (
-              <UserRow key={user.id} user={user} action={<button className="icon-button" onClick={() => addFriend(user.id)}><UserPlus size={17} /></button>} />
-            ))}
+            {results.map((user) => {
+              const status = user.friendshipStatus;
+              const primary =
+                status === "ACCEPTED" ? (
+                  <span className="pill-muted">Friends</span>
+                ) : status === "PENDING" && user.outgoing ? (
+                  <button className="icon-button" title="Cancel request" onClick={() => void cancelRequest(user)}><X size={17} /></button>
+                ) : status === "PENDING" ? (
+                  <span className="pill-muted">Requested you</span>
+                ) : (
+                  <button className="icon-button" title="Add friend" onClick={() => addFriend(user.id)}><UserPlus size={17} /></button>
+                );
+              return (
+                <UserRow
+                  key={user.id}
+                  user={user}
+                  action={
+                    <div className="inline-actions">
+                      {primary}
+                      <KebabMenu items={[{ label: "Block", icon: <Ban size={15} />, danger: true, onClick: () => void blockUser(user) }]} />
+                    </div>
+                  }
+                />
+              );
+            })}
           </section>
         )}
 
@@ -846,23 +1124,16 @@ function Messenger({
         <section className="panel conversations">
           <h3>Messages</h3>
           {conversations.length === 0 && <p className="empty">Add a friend to open your first private chat.</p>}
-          {conversations.map((conversation) => {
-            const other = conversation.members.find((member) => member.id !== session.user.id) ?? conversation.members[0];
-            const title = conversationTitle(conversation, session.user.id);
-            return (
-              <button
-                key={conversation.id}
-                className={`conversation-item ${conversation.id === selected?.id ? "active" : ""}`}
-                onClick={() => setSelectedId(conversation.id)}
-              >
-                {conversation.type === "DIRECT" ? <PresenceAvatar user={other} /> : <div className="avatar placeholder">{conversation.type === "CHANNEL" ? <Hash size={18} /> : <Users size={18} />}</div>}
-                <span>
-                  <strong>{title}</strong>
-                  <small>{conversation.lastMessage ? previewMessage(conversation.lastMessage) : "Say hello"}</small>
-                </span>
+          {activeConversations.map(renderConversationItem)}
+          {archivedConversations.length > 0 && (
+            <>
+              <button className="archived-toggle" onClick={() => setShowArchived((value) => !value)} aria-expanded={showArchived}>
+                <Archive size={14} /> Archived ({archivedConversations.length})
+                <ChevronDown size={14} className={showArchived ? "rot" : ""} />
               </button>
-            );
-          })}
+              {showArchived && archivedConversations.map(renderConversationItem)}
+            </>
+          )}
         </section>
 
         <Suspense fallback={null}>
@@ -871,7 +1142,21 @@ function Messenger({
 
         <section className="panel friends">
           <h3>Friends</h3>
-          {friends.map((friend) => <UserRow key={friend.id} user={friend} />)}
+          {friends.length === 0 && <p className="empty">No friends yet. Search above to connect.</p>}
+          {friends.map((friend) => (
+            <UserRow
+              key={friend.id}
+              user={friend}
+              action={
+                <KebabMenu
+                  items={[
+                    { label: "Remove friend", icon: <UserMinus size={15} />, onClick: () => void unfriend(friend) },
+                    { label: "Block", icon: <Ban size={15} />, danger: true, onClick: () => void blockUser(friend) }
+                  ]}
+                />
+              }
+            />
+          ))}
         </section>
       </aside>
 
@@ -911,6 +1196,29 @@ function Messenger({
             <button className="icon-button" title="Media gallery" onClick={() => setGalleryOpen(true)}><Images size={18} /></button>
             <CallButtons selected={selected} peer={peer} />
             <button className="icon-button" title="Call history" onClick={() => setCallHistoryOpen(true)}><PhoneCall size={18} /></button>
+            {selected && (
+              <div className="menu-wrap">
+                <button className="icon-button" title="More options" aria-haspopup="menu" aria-expanded={convMenuOpen} onClick={() => setConvMenuOpen((open) => !open)}>
+                  <MoreVertical size={18} />
+                </button>
+                {convMenuOpen && (
+                  <>
+                    <div className="menu-backdrop" onClick={() => setConvMenuOpen(false)} aria-hidden="true" />
+                    <div className="menu" role="menu">
+                      <button className="menu-item" role="menuitem" onClick={() => toggleMute(selected)}>
+                        {selected.muted ? <><Bell size={15} /> Unmute notifications</> : <><BellOff size={15} /> Mute notifications</>}
+                      </button>
+                      <button className="menu-item" role="menuitem" onClick={() => toggleArchive(selected)}>
+                        {selected.archived ? <><Inbox size={15} /> Unarchive</> : <><Archive size={15} /> Archive</>}
+                      </button>
+                      <button className="menu-item danger" role="menuitem" onClick={() => removeConversation(selected)}>
+                        {selected.type === "DIRECT" ? <><Trash2 size={15} /> Delete chat</> : <><LogOut size={15} /> Leave conversation</>}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
           </div>
         </header>
 
@@ -926,7 +1234,10 @@ function Messenger({
           token={session.token}
           conversation={selected}
           onReply={setReplyTo}
+          onForward={setForwardSource}
           onTogglePin={togglePin}
+          hasMore={hasMore}
+          onLoadOlder={loadOlder}
         />
 
         {showTyping && (
@@ -954,6 +1265,16 @@ function Messenger({
           session={session}
           onClose={() => setProfileOpen(false)}
           onSave={(user) => setSession((current) => (current ? { ...current, user } : current))}
+          onToken={(token) => setSession((current) => (current ? { ...current, token } : current))}
+          onLogout={onLogout}
+        />
+      )}
+      {forwardSource && (
+        <ForwardDialog
+          conversations={conversations}
+          currentUserId={session.user.id}
+          onClose={() => setForwardSource(null)}
+          onPick={doForward}
         />
       )}
       {createOpen && <CreateConversationDialog friends={friends} onClose={() => setCreateOpen(false)} onCreate={createConversation} />}
@@ -1278,14 +1599,20 @@ function MessageList({
   token,
   conversation,
   onReply,
-  onTogglePin
+  onForward,
+  onTogglePin,
+  hasMore,
+  onLoadOlder
 }: {
   messages: Message[];
   currentUserId: string;
   token: string;
   conversation?: Conversation;
   onReply: (message: Message) => void;
+  onForward: (message: Message) => void;
   onTogglePin: (message: Message) => void;
+  hasMore: boolean;
+  onLoadOlder: () => Promise<void> | void;
 }) {
   const { encryptForConversation, decryptForConversation } = useEncryption();
   const conversationId = conversation?.id ?? "";
@@ -1294,6 +1621,9 @@ function MessageList({
   const listRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const atBottomRef = useRef(true);
+  const loadingOlderRef = useRef(false);
+  const pendingAnchorRef = useRef<number | null>(null);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const [showJump, setShowJump] = useState(false);
   const [editingId, setEditingId] = useState("");
   const [draft, setDraft] = useState("");
@@ -1313,10 +1643,31 @@ function MessageList({
   }, []);
 
   const handleScroll = useCallback(() => {
+    const node = listRef.current;
+    // Scrolled near the top with more history available → page older messages,
+    // remembering the distance from the bottom so the view doesn't jump.
+    if (node && hasMore && !loadingOlderRef.current && node.scrollTop < 80) {
+      loadingOlderRef.current = true;
+      pendingAnchorRef.current = node.scrollHeight - node.scrollTop;
+      setLoadingOlder(true);
+      Promise.resolve(onLoadOlder()).finally(() => {
+        loadingOlderRef.current = false;
+        setLoadingOlder(false);
+      });
+    }
     const near = isNearBottom();
     atBottomRef.current = near;
     setShowJump(!near);
-  }, [isNearBottom]);
+  }, [isNearBottom, hasMore, onLoadOlder]);
+
+  // After older messages are prepended, restore the scroll position so the
+  // messages the user was reading stay put (anchor = distance from bottom).
+  useLayoutEffect(() => {
+    if (pendingAnchorRef.current != null && listRef.current) {
+      listRef.current.scrollTop = listRef.current.scrollHeight - pendingAnchorRef.current;
+      pendingAnchorRef.current = null;
+    }
+  }, [messages.length]);
 
   // Jump straight to the latest message when switching conversations.
   useEffect(() => {
@@ -1380,6 +1731,7 @@ function MessageList({
   return (
     <>
     <div className="message-list" ref={listRef} onScroll={handleScroll}>
+      {loadingOlder && <div className="loading-older">Loading earlier messages…</div>}
       {messages.map((message) => {
         const mine = message.senderId === currentUserId;
         const reactionCounts = aggregateReactions(message);
@@ -1447,6 +1799,11 @@ function MessageList({
                   <button onClick={() => onReply(message)} title="Reply">
                     <Reply size={14} />
                   </button>
+                  {!message.encrypted && (
+                    <button onClick={() => onForward(message)} title="Forward">
+                      <Forward size={14} />
+                    </button>
+                  )}
                   <button onClick={() => void onTogglePin(message)} title={message.pinnedAt ? "Unpin" : "Pin"} className={message.pinnedAt ? "active" : ""}>
                     <Pin size={14} />
                   </button>
@@ -1960,44 +2317,181 @@ function formatLastSeen(iso: string) {
 function ProfileDialog({
   session,
   onClose,
-  onSave
+  onSave,
+  onToken,
+  onLogout
 }: {
   session: Session;
   onClose: () => void;
   onSave: (user: User) => void;
+  onToken: (token: string) => void;
+  onLogout: () => void;
 }) {
+  const [tab, setTab] = useState<"profile" | "security">("profile");
   const [displayName, setDisplayName] = useState(session.user.displayName);
+  const [username, setUsername] = useState(session.user.username);
   const [bio, setBio] = useState(session.user.bio);
   const [avatarUrl, setAvatarUrl] = useState(session.user.avatarUrl ?? "");
+  const [error, setError] = useState("");
+  const [status, setStatus] = useState("");
+  const [saving, setSaving] = useState(false);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+
+  // Change-password fields.
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [pwError, setPwError] = useState("");
+  const [pwStatus, setPwStatus] = useState("");
+  const [changing, setChanging] = useState(false);
+
+  // Delete-account fields.
+  const [deletePassword, setDeletePassword] = useState("");
+  const [deleteError, setDeleteError] = useState("");
+  const [deleting, setDeleting] = useState(false);
 
   async function save(event: React.FormEvent) {
     event.preventDefault();
-    const { user } = await api.updateProfile(session.token, { displayName, bio, avatarUrl });
-    onSave(user);
-    onClose();
+    setError("");
+    setStatus("");
+    setSaving(true);
+    try {
+      const { user } = await api.updateProfile(session.token, {
+        displayName,
+        bio,
+        avatarUrl,
+        username: username !== session.user.username ? username : undefined
+      });
+      onSave(user);
+      setStatus("Profile saved");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to save profile");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function uploadAvatar(file: File | undefined) {
+    if (!file) return;
+    setError("");
+    try {
+      const { user } = await api.uploadAvatar(session.token, file);
+      setAvatarUrl(user.avatarUrl ?? "");
+      onSave(user);
+      setStatus("Photo updated");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to upload photo");
+    }
+    if (fileRef.current) fileRef.current.value = "";
+  }
+
+  async function changePassword(event: React.FormEvent) {
+    event.preventDefault();
+    setPwError("");
+    setPwStatus("");
+    setChanging(true);
+    try {
+      // Re-wrap the E2EE private key under the new password (if this device has
+      // one) so encrypted history stays readable after the change.
+      const keyBackup = (await rewrapLocalPrivateKey(session.user.id, newPassword)) ?? undefined;
+      const { token } = await api.changePassword(session.token, { currentPassword, newPassword, keyBackup });
+      onToken(token);
+      setCurrentPassword("");
+      setNewPassword("");
+      setPwStatus("Password changed");
+    } catch (err) {
+      setPwError(err instanceof Error ? err.message : "Unable to change password");
+    } finally {
+      setChanging(false);
+    }
+  }
+
+  async function deleteAccount(event: React.FormEvent) {
+    event.preventDefault();
+    setDeleteError("");
+    if (!window.confirm("Permanently delete your account? This cannot be undone.")) return;
+    setDeleting(true);
+    try {
+      await api.deleteAccount(session.token, deletePassword);
+      onLogout();
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : "Unable to delete account");
+      setDeleting(false);
+    }
   }
 
   return (
     <ModalShell onClose={onClose}>
-      <form className="dialog" onSubmit={save}>
+      <section className="dialog">
         <div className="dialog-head">
-          <h2>Profile</h2>
+          <h2>Account settings</h2>
           <button type="button" className="icon-button" onClick={onClose}><X size={18} /></button>
         </div>
-        <label>
-          Display name
-          <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
-        </label>
-        <label>
-          Bio
-          <textarea value={bio} onChange={(event) => setBio(event.target.value)} maxLength={180} />
-        </label>
-        <label>
-          Avatar URL
-          <input value={avatarUrl} onChange={(event) => setAvatarUrl(event.target.value)} />
-        </label>
-        <button className="primary-button">Save profile</button>
-      </form>
+        <div className="segmented">
+          <button type="button" className={tab === "profile" ? "active" : ""} onClick={() => setTab("profile")}>Profile</button>
+          <button type="button" className={tab === "security" ? "active" : ""} onClick={() => setTab("security")}>Security</button>
+        </div>
+
+        {tab === "profile" ? (
+          <form className="dialog-body" onSubmit={save}>
+            <div className="avatar-edit">
+              <Avatar user={{ ...session.user, avatarUrl: avatarUrl || null }} />
+              <input ref={fileRef} type="file" accept="image/*" hidden onChange={(event) => void uploadAvatar(event.target.files?.[0])} />
+              <button type="button" className="ghost-button" onClick={() => fileRef.current?.click()}>
+                <Upload size={15} /> Upload photo
+              </button>
+            </div>
+            <label>
+              Display name
+              <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} minLength={2} maxLength={60} />
+            </label>
+            <label>
+              Username
+              <input value={username} onChange={(event) => setUsername(event.target.value)} minLength={3} maxLength={24} pattern="[a-zA-Z0-9_]+" />
+            </label>
+            <label>
+              Bio
+              <textarea value={bio} onChange={(event) => setBio(event.target.value)} maxLength={180} />
+            </label>
+            <label>
+              Avatar URL
+              <input value={avatarUrl} onChange={(event) => setAvatarUrl(event.target.value)} placeholder="https://…" />
+            </label>
+            {error && <p className="error">{error}</p>}
+            {status && <p className="status">{status}</p>}
+            <button className="primary-button" disabled={saving}>{saving ? "Saving…" : "Save profile"}</button>
+          </form>
+        ) : (
+          <form className="dialog-body" onSubmit={changePassword}>
+            <h3><KeyRound size={16} /> Change password</h3>
+            <label>
+              Current password
+              <input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} autoComplete="current-password" />
+            </label>
+            <label>
+              New password
+              <input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} autoComplete="new-password" minLength={10} />
+            </label>
+            {pwError && <p className="error">{pwError}</p>}
+            {pwStatus && <p className="status">{pwStatus}</p>}
+            <button className="primary-button" disabled={changing || !currentPassword || newPassword.length < 10}>
+              {changing ? "Updating…" : "Update password"}
+            </button>
+
+            <div className="danger-zone">
+              <h3><Trash2 size={16} /> Delete account</h3>
+              <p className="muted">This permanently removes your account, messages, and connections. This cannot be undone.</p>
+              <label>
+                Confirm password
+                <input type="password" value={deletePassword} onChange={(event) => setDeletePassword(event.target.value)} autoComplete="current-password" />
+              </label>
+              {deleteError && <p className="error">{deleteError}</p>}
+              <button type="button" className="danger-button" disabled={deleting || !deletePassword} onClick={deleteAccount}>
+                {deleting ? "Deleting…" : "Delete my account"}
+              </button>
+            </div>
+          </form>
+        )}
+      </section>
     </ModalShell>
   );
 }
@@ -2120,6 +2614,71 @@ function Avatar({ user }: { user: User }) {
     [user.displayName]
   );
   return user.avatarUrl ? <img className="avatar" src={user.avatarUrl} alt="" /> : <div className="avatar">{initials}</div>;
+}
+
+type MenuItem = { label: string; icon?: React.ReactNode; danger?: boolean; onClick: () => void };
+
+function KebabMenu({ items }: { items: MenuItem[] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="menu-wrap">
+      <button className="icon-button" aria-haspopup="menu" aria-expanded={open} title="More options" onClick={() => setOpen((o) => !o)}>
+        <MoreVertical size={16} />
+      </button>
+      {open && (
+        <>
+          <div className="menu-backdrop" onClick={() => setOpen(false)} aria-hidden="true" />
+          <div className="menu" role="menu">
+            {items.map((item) => (
+              <button
+                key={item.label}
+                className={`menu-item ${item.danger ? "danger" : ""}`}
+                role="menuitem"
+                onClick={() => {
+                  setOpen(false);
+                  item.onClick();
+                }}
+              >
+                {item.icon}
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ForwardDialog({
+  conversations,
+  currentUserId,
+  onClose,
+  onPick
+}: {
+  conversations: Conversation[];
+  currentUserId: string;
+  onClose: () => void;
+  onPick: (conversationId: string) => void;
+}) {
+  return (
+    <ModalShell onClose={onClose}>
+      <section className="dialog">
+        <div className="dialog-head">
+          <h2><Forward size={18} /> Forward to…</h2>
+          <button type="button" className="icon-button" onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="call-history-list">
+          {conversations.length === 0 && <p className="empty">No conversations to forward to.</p>}
+          {conversations.map((conversation) => (
+            <button key={conversation.id} className="result-item" onClick={() => onPick(conversation.id)}>
+              {conversationTitle(conversation, currentUserId)}
+            </button>
+          ))}
+        </div>
+      </section>
+    </ModalShell>
+  );
 }
 
 function UserRow({ user, action }: { user: User; action?: React.ReactNode }) {

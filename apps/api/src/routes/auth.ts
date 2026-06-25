@@ -2,9 +2,17 @@ import { Router } from "express";
 import crypto from "node:crypto";
 import { prisma } from "../db.js";
 import { hashPassword, requireAuth, signToken, verifyPassword } from "../auth.js";
-import { loginSchema, registerSchema, resendCodeSchema, verifyRegistrationSchema } from "../validators.js";
+import {
+  changePasswordSchema,
+  forgotPasswordSchema,
+  loginSchema,
+  registerSchema,
+  resendCodeSchema,
+  resetPasswordSchema,
+  verifyRegistrationSchema
+} from "../validators.js";
 import { handleError, publicUser } from "../utils.js";
-import { sendVerificationEmail } from "../mail.js";
+import { sendPasswordResetEmail, sendVerificationEmail } from "../mail.js";
 
 export const authRouter = Router();
 
@@ -151,4 +159,105 @@ authRouter.post("/login", async (req, res) => {
 authRouter.get("/me", requireAuth, async (req, res) => {
   const user = await prisma.user.findUniqueOrThrow({ where: { id: req.user!.id } });
   res.json({ user: publicUser(user) });
+});
+
+// Change password while logged in. Because the E2EE private key is wrapped with
+// the password, the client re-wraps it under the new password and sends the new
+// envelope as `keyBackup`; we update both atomically so messages stay readable.
+authRouter.post("/change-password", requireAuth, async (req, res) => {
+  try {
+    const input = changePasswordSchema.parse(req.body);
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: req.user!.id } });
+    if (!(await verifyPassword(input.currentPassword, user.passwordHash))) {
+      res.status(400).json({ message: "Current password is incorrect" });
+      return;
+    }
+    // If an E2EE identity exists, the caller MUST supply a re-wrapped key — else
+    // the stored wrapped key would no longer match the new password and future
+    // devices could never restore it. Force unlocking encryption on this device.
+    if (user.publicKey && !input.keyBackup) {
+      res.status(409).json({ message: "Unlock encryption on this device before changing your password" });
+      return;
+    }
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        passwordHash: await hashPassword(input.newPassword),
+        ...(input.keyBackup
+          ? {
+              encryptedPrivateKey: input.keyBackup.encryptedPrivateKey,
+              keySalt: input.keyBackup.keySalt,
+              keyIv: input.keyBackup.keyIv
+            }
+          : {})
+      }
+    });
+    // Issue a fresh token so the change feels like a clean re-auth.
+    res.json({ token: signToken(user.id) });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+// Step 1 of reset: email a code. Always responds 200 with the same shape so the
+// endpoint can't be used to enumerate which emails have accounts.
+authRouter.post("/forgot-password", async (req, res) => {
+  try {
+    const input = forgotPasswordSchema.parse(req.body);
+    const email = input.email.toLowerCase();
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (user) {
+      const code = generateCode();
+      await prisma.passwordReset.deleteMany({ where: { userId: user.id } });
+      await prisma.passwordReset.create({
+        data: { userId: user.id, codeHash: hashCode(code), expiresAt: new Date(Date.now() + CODE_TTL_MS) }
+      });
+      await sendPasswordResetEmail(email, code);
+    }
+    res.json({ ok: true });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+// Step 2 of reset: verify the code and set a new password. The E2EE identity is
+// cleared because the old private key can no longer be unwrapped (the password
+// that wrapped it is gone); a fresh identity is generated on next login.
+authRouter.post("/reset-password", async (req, res) => {
+  try {
+    const input = resetPasswordSchema.parse(req.body);
+    const email = input.email.toLowerCase();
+    const user = await prisma.user.findUnique({ where: { email } });
+    const reset = user ? await prisma.passwordReset.findFirst({ where: { userId: user.id }, orderBy: { createdAt: "desc" } }) : null;
+
+    if (!user || !reset || reset.expiresAt < new Date()) {
+      res.status(400).json({ message: "Reset code expired. Please request a new one." });
+      return;
+    }
+    if (reset.attempts >= MAX_ATTEMPTS) {
+      await prisma.passwordReset.deleteMany({ where: { userId: user.id } });
+      res.status(429).json({ message: "Too many attempts. Please request a new code." });
+      return;
+    }
+    if (reset.codeHash !== hashCode(input.code)) {
+      await prisma.passwordReset.update({ where: { id: reset.id }, data: { attempts: { increment: 1 } } });
+      res.status(400).json({ message: "Incorrect code" });
+      return;
+    }
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        passwordHash: await hashPassword(input.newPassword),
+        publicKey: null,
+        encryptedPrivateKey: null,
+        keySalt: null,
+        keyIv: null
+      }
+    });
+    await prisma.passwordReset.deleteMany({ where: { userId: user.id } });
+    res.json({ token: signToken(user.id), user: publicUser(user) });
+  } catch (error) {
+    handleError(res, error);
+  }
 });

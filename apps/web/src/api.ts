@@ -50,6 +50,21 @@ export const api = {
   login(input: { emailOrUsername: string; password: string }) {
     return request<Session>("/auth/login", { method: "POST", body: JSON.stringify(input) });
   },
+  changePassword(
+    token: string,
+    input: { currentPassword: string; newPassword: string; keyBackup?: { encryptedPrivateKey: string; keySalt: string; keyIv: string } }
+  ) {
+    return request<{ token: string }>("/auth/change-password", { method: "POST", body: JSON.stringify(input) }, token);
+  },
+  forgotPassword(email: string) {
+    return request<{ ok: true }>("/auth/forgot-password", { method: "POST", body: JSON.stringify({ email }) });
+  },
+  deleteAccount(token: string, password: string) {
+    return request<void>("/users/me", { method: "DELETE", body: JSON.stringify({ password }) }, token);
+  },
+  resetPassword(input: { email: string; code: string; newPassword: string }) {
+    return request<Session>("/auth/reset-password", { method: "POST", body: JSON.stringify(input) });
+  },
   getKeys(token: string) {
     return request<{ keys: { publicKey: string; encryptedPrivateKey: string; keySalt: string; keyIv: string } | null }>("/users/keys", {}, token);
   },
@@ -59,8 +74,16 @@ export const api = {
   me(token: string) {
     return request<{ user: User }>("/auth/me", {}, token);
   },
-  updateProfile(token: string, input: Partial<Pick<User, "displayName" | "bio" | "avatarUrl">>) {
+  updateProfile(token: string, input: Partial<Pick<User, "displayName" | "bio" | "avatarUrl" | "username">>) {
     return request<{ user: User }>("/users/me", { method: "PATCH", body: JSON.stringify(input) }, token);
+  },
+  uploadAvatar(token: string, file: File) {
+    const body = new FormData();
+    body.append("file", file);
+    return request<{ user: User }>("/users/me/avatar", { method: "POST", body }, token);
+  },
+  userProfile(token: string, userId: string) {
+    return request<{ user: User }>(`/users/${userId}`, {}, token);
   },
   searchUsers(token: string, query: string) {
     return request<{ users: User[] }>(`/users/search?q=${encodeURIComponent(query)}`, {}, token);
@@ -80,6 +103,18 @@ export const api = {
   declineFriendRequest(token: string, requestId: string) {
     return request(`/friends/requests/${requestId}/decline`, { method: "POST" }, token);
   },
+  removeFriend(token: string, userId: string) {
+    return request<void>(`/friends/${userId}`, { method: "DELETE" }, token);
+  },
+  blockUser(token: string, userId: string) {
+    return request<{ ok: true }>(`/friends/${userId}/block`, { method: "POST" }, token);
+  },
+  unblockUser(token: string, userId: string) {
+    return request<{ ok: true }>(`/friends/${userId}/unblock`, { method: "POST" }, token);
+  },
+  blockedUsers(token: string) {
+    return request<{ blocked: User[] }>("/friends/blocked", {}, token);
+  },
   conversations(token: string) {
     return request<{ conversations: Conversation[] }>("/conversations", {}, token);
   },
@@ -89,8 +124,37 @@ export const api = {
   updateConversation(token: string, conversationId: string, input: { name?: string; description?: string; memberIds?: string[] }) {
     return request<{ conversation: Conversation }>(`/conversations/${conversationId}`, { method: "PATCH", body: JSON.stringify(input) }, token);
   },
-  messages(token: string, conversationId: string) {
-    return request<{ messages: Message[] }>(`/conversations/${conversationId}/messages`, {}, token);
+  deleteConversation(token: string, conversationId: string) {
+    return request<{ hidden?: boolean; left?: boolean; deleted?: boolean }>(`/conversations/${conversationId}`, { method: "DELETE" }, token);
+  },
+  leaveConversation(token: string, conversationId: string) {
+    return request<void>(`/conversations/${conversationId}/leave`, { method: "POST" }, token);
+  },
+  muteConversation(token: string, conversationId: string, minutes?: number) {
+    return request<{ muted: boolean }>(`/conversations/${conversationId}/mute`, { method: "POST", body: JSON.stringify({ minutes }) }, token);
+  },
+  unmuteConversation(token: string, conversationId: string) {
+    return request<{ muted: boolean }>(`/conversations/${conversationId}/unmute`, { method: "POST" }, token);
+  },
+  archiveConversation(token: string, conversationId: string) {
+    return request<{ archived: boolean }>(`/conversations/${conversationId}/archive`, { method: "POST" }, token);
+  },
+  unarchiveConversation(token: string, conversationId: string) {
+    return request<{ archived: boolean }>(`/conversations/${conversationId}/unarchive`, { method: "POST" }, token);
+  },
+  removeMember(token: string, conversationId: string, userId: string) {
+    return request<{ conversation: Conversation }>(`/conversations/${conversationId}/members/${userId}`, { method: "DELETE" }, token);
+  },
+  forwardMessage(token: string, conversationId: string, messageId: string, toConversationId: string) {
+    return request<{ message: Message }>(
+      `/conversations/${conversationId}/messages/${messageId}/forward`,
+      { method: "POST", body: JSON.stringify({ toConversationId }) },
+      token
+    );
+  },
+  messages(token: string, conversationId: string, before?: string) {
+    const query = before ? `?before=${encodeURIComponent(before)}` : "";
+    return request<{ messages: Message[]; hasMore: boolean }>(`/conversations/${conversationId}/messages${query}`, {}, token);
   },
   sendMessage(token: string, conversationId: string, body: string, scheduledFor?: string, encrypted?: boolean, replyToId?: string) {
     return request<{ message: Message }>(
