@@ -539,6 +539,19 @@ function Messenger({
     unlockAudio();
   }, []);
 
+  // Lock the document to the (keyboard-resized) viewport so there is never any
+  // scrollable space below the latest message — the chat fills exactly the area
+  // above the keyboard, like a native messenger. Only while the chat is mounted,
+  // so the auth screen stays scrollable on short devices.
+  useEffect(() => {
+    document.documentElement.classList.add("messenger-active");
+    document.body.classList.add("messenger-active");
+    return () => {
+      document.documentElement.classList.remove("messenger-active");
+      document.body.classList.remove("messenger-active");
+    };
+  }, []);
+
   // Close the mobile conversation drawer with Escape.
   useEffect(() => {
     if (!mobileListOpen) return;
@@ -1224,6 +1237,21 @@ function MessageList({
   useEffect(() => {
     scrollToBottom("auto");
   }, [conversationId, scrollToBottom]);
+
+  // When the keyboard opens/closes the viewport resizes — if the user was
+  // reading the latest messages, keep them pinned to the bottom (native feel).
+  useEffect(() => {
+    const vv = window.visualViewport;
+    const onResize = () => {
+      if (atBottomRef.current) scrollToBottom("auto");
+    };
+    vv?.addEventListener("resize", onResize);
+    window.addEventListener("resize", onResize);
+    return () => {
+      vv?.removeEventListener("resize", onResize);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [scrollToBottom]);
 
   // Only auto-follow new messages if the user is already reading the bottom,
   // so scrolling up to older messages is never interrupted.

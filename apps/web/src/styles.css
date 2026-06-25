@@ -263,6 +263,25 @@ textarea:focus {
   background: var(--bg);
 }
 
+/* While the chat is open, pin the whole document to the visible (keyboard-
+   resized) viewport. This removes any dead space / scroll below the composer so
+   the latest messages stay fixed above the keyboard. Scoped to the messenger so
+   the auth screen can still scroll on short phones. */
+html.messenger-active {
+  height: var(--app-h, 100dvh);
+  overflow: hidden;
+}
+
+body.messenger-active {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--app-h, 100dvh);
+  min-height: 0;
+  overflow: hidden;
+}
+
 .sidebar {
   border-right: 1px solid var(--line);
   padding: 18px;
