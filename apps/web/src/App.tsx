@@ -631,7 +631,7 @@ function Messenger({
             }
           }
           showNotification(message.sender?.displayName ?? "New message", preview || "New message", {
-            icon: message.sender?.avatarUrl ?? undefined,
+            icon: api.mediaUrl(message.sender?.avatarUrl ?? null) || undefined,
             tag: message.conversationId,
             onClick: () => {
               setSelectedId(message.conversationId);
@@ -2613,7 +2613,17 @@ function Avatar({ user }: { user: User }) {
         .toUpperCase(),
     [user.displayName]
   );
-  return user.avatarUrl ? <img className="avatar" src={user.avatarUrl} alt="" /> : <div className="avatar">{initials}</div>;
+  // Resolve relative upload paths (e.g. /uploads/avatars/…) against the API
+  // origin; full http/blob/data URLs pass through unchanged.
+  const src = api.mediaUrl(user.avatarUrl);
+  const [failed, setFailed] = useState(false);
+  // Reset the failure flag when the source changes (e.g. a new photo upload).
+  useEffect(() => setFailed(false), [src]);
+  return src && !failed ? (
+    <img className="avatar" src={src} alt="" onError={() => setFailed(true)} />
+  ) : (
+    <div className="avatar">{initials}</div>
+  );
 }
 
 type MenuItem = { label: string; icon?: React.ReactNode; danger?: boolean; onClick: () => void };
