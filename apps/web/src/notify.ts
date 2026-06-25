@@ -84,13 +84,26 @@ export function ensureNotificationPermission() {
   if (Notification.permission === "default") void Notification.requestPermission();
 }
 
-export function showNotification(title: string, body: string) {
+export function showNotification(
+  title: string,
+  body: string,
+  options: { icon?: string; tag?: string; onClick?: () => void } = {}
+) {
   if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
   if (!document.hidden) return; // only notify when the tab isn't focused
   try {
-    const n = new Notification(title, { body, icon: "/favicon.svg", tag: "nexus" });
+    const n = new Notification(title, {
+      body,
+      icon: options.icon || "/favicon.ico",
+      badge: "/favicon.ico",
+      // Per-conversation tag so a new message replaces the previous one for that
+      // chat (like a messenger) instead of stacking; renotify re-alerts.
+      tag: options.tag ?? "nexus",
+      renotify: Boolean(options.tag)
+    } as NotificationOptions);
     n.onclick = () => {
       window.focus();
+      options.onClick?.();
       n.close();
     };
   } catch {

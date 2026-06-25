@@ -179,13 +179,16 @@ export function conversationsRouter(io: Server) {
       return;
     }
 
+    // Fetch the most RECENT 150 (desc + take), then flip to chronological order
+    // for display. Ordering ascending with take:150 would return the *oldest*
+    // 150 and make new messages vanish once a thread passes 150 messages.
     const messages = await prisma.message.findMany({
       where: { conversationId, deliveredAt: { not: null } },
       include: messageInclude(),
-      orderBy: { createdAt: "asc" },
+      orderBy: { createdAt: "desc" },
       take: 150
     });
-    res.json({ messages });
+    res.json({ messages: messages.reverse() });
   });
 
   router.get("/:conversationId/media", async (req, res) => {

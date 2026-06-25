@@ -29,6 +29,7 @@ import {
   Send,
   Smile,
   Sun,
+  SwitchCamera,
   Trash2,
   UserPlus,
   Users,
@@ -481,7 +482,14 @@ function Messenger({
       const mine = message.senderId === session.user.id;
       if (!mine) {
         playSound("message");
-        showNotification("New message", message.encrypted ? "Encrypted message" : previewMessage(message) || "New message");
+        showNotification(message.sender?.displayName ?? "New message", previewMessage(message) || "New message", {
+          icon: message.sender?.avatarUrl ?? undefined,
+          tag: message.conversationId,
+          onClick: () => {
+            setSelectedId(message.conversationId);
+            setMobileListOpen(false);
+          }
+        });
       }
       // If the new message lands in the conversation we're looking at, mark it read.
       if (message.conversationId === activeConversationRef.current && !mine) {
@@ -1664,11 +1672,14 @@ function CameraDialog({ onClose, onCapture }: { onClose: () => void; onCapture: 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const [error, setError] = useState("");
+  const [facing, setFacing] = useState<"user" | "environment">("user");
 
   useEffect(() => {
     let active = true;
+    // Stop any previous stream before switching cameras.
+    streamRef.current?.getTracks().forEach((t) => t.stop());
     navigator.mediaDevices
-      ?.getUserMedia({ video: { facingMode: "user" }, audio: false })
+      ?.getUserMedia({ video: { facingMode: { ideal: facing } }, audio: false })
       .then((stream) => {
         if (!active) {
           stream.getTracks().forEach((t) => t.stop());
@@ -1682,7 +1693,7 @@ function CameraDialog({ onClose, onCapture }: { onClose: () => void; onCapture: 
       active = false;
       streamRef.current?.getTracks().forEach((t) => t.stop());
     };
-  }, []);
+  }, [facing]);
 
   function capture() {
     const video = videoRef.current;
@@ -1707,7 +1718,18 @@ function CameraDialog({ onClose, onCapture }: { onClose: () => void; onCapture: 
           <p className="error">{error}</p>
         ) : (
           <>
-            <video ref={videoRef} className="camera-preview" autoPlay playsInline muted />
+            <div className="camera-frame">
+              <video ref={videoRef} className={`camera-preview ${facing === "user" ? "mirror" : ""}`} autoPlay playsInline muted />
+              <button
+                type="button"
+                className="camera-flip"
+                onClick={() => setFacing((f) => (f === "user" ? "environment" : "user"))}
+                title="Switch camera"
+                aria-label="Switch camera"
+              >
+                <SwitchCamera size={20} />
+              </button>
+            </div>
             <button className="primary-button" onClick={capture}>Capture & send</button>
           </>
         )}

@@ -77,6 +77,7 @@ export function CallProvider({
   const callIdRef = useRef("");
   const peerIdRef = useRef("");
   const callTypeRef = useRef<CallType>("AUDIO");
+  const facingRef = useRef<"user" | "environment">("user");
   const iceServersRef = useRef<RTCIceServer[]>(FALLBACK_ICE);
   const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
   const signalQueueRef = useRef<SignalPayload[]>([]);
@@ -129,6 +130,7 @@ export function CallProvider({
     const preview = localPreviewRef.current;
     stream.getTracks().forEach((track) => preview.addTrack(track));
     rawCameraTrackRef.current = stream.getVideoTracks()[0] ?? null;
+    facingRef.current = "user"; // calls open on the front camera
     if (localVideoRef.current) localVideoRef.current.srcObject = preview;
     return preview;
   }, []);
@@ -383,16 +385,23 @@ export function CallProvider({
 
   async function switchCamera() {
     try {
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const cameras = devices.filter((device) => device.kind === "videoinput");
-      if (cameras.length < 2) return;
-      const current = rawCameraTrackRef.current?.getSettings().deviceId;
-      const next = cameras.find((camera) => camera.deviceId !== current) ?? cameras[0];
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: next.deviceId } } });
+      // Toggle front/back via facingMode — the reliable approach on phones
+      // (deviceId labels are often empty / unstable on mobile browsers).
+      const next = facingRef.current === "user" ? "environment" : "user";
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: next } } });
       const track = stream.getVideoTracks()[0];
+      facingRef.current = next;
       rawCameraTrackRef.current?.stop();
       rawCameraTrackRef.current = track;
-      if (!sharing && !blurOn) setLocalVideoTrack(track);
+      if (sharing) return; // keep the shared screen as the outgoing video
+      if (blurOn) {
+        blurHandleRef.current?.stop();
+        const handle = await createBlurredTrack(track);
+        blurHandleRef.current = handle;
+        setLocalVideoTrack(handle.track);
+      } else {
+        setLocalVideoTrack(track);
+      }
     } catch {
       setError("Unable to switch camera");
     }

@@ -1143,6 +1143,18 @@ body.messenger-active {
   }
 }
 
+/* On phones the self-preview should be a tall portrait card (like Messenger),
+   not the small desktop 4:3 box, since phone cameras shoot vertically. */
+@media (max-width: 768px) {
+  .call-local {
+    width: clamp(104px, 30vw, 150px);
+    aspect-ratio: 9 / 16;
+    right: max(12px, env(safe-area-inset-right));
+    bottom: max(14px, env(safe-area-inset-bottom));
+    border-radius: 16px;
+  }
+}
+
 /* ===== Presence, typing, reply, pin, emoji, camera, collapse ===== */
 .avatar-wrap {
   position: relative;
@@ -1328,12 +1340,36 @@ body.messenger-active {
   gap: 14px;
 }
 
+.camera-frame {
+  position: relative;
+  display: grid;
+}
+
 .camera-preview {
   width: 100%;
   border-radius: 12px;
   background: #05070a;
-  transform: scaleX(-1);
   max-height: 60vh;
+}
+
+/* Mirror only the front (selfie) camera, like every native camera app. */
+.camera-preview.mirror {
+  transform: scaleX(-1);
+}
+
+.camera-flip {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 50%;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(6px);
 }
 
 .gallery-dialog {
