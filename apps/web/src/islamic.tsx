@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import * as adhan from "adhan";
-import { Check, RotateCcw } from "lucide-react";
+import { Check, RotateCcw, Settings2 } from "lucide-react";
 import { ADHKAR_MASAA, ADHKAR_SABAH, type Dhikr } from "./adhkar";
 
 const PRAYERS = [
@@ -14,9 +14,28 @@ const PRAYERS = [
 
 type PrayerKey = (typeof PRAYERS)[number]["key"];
 
-// Picks the official calculation convention for the detected country so times
-// match the local authority (Tunisia, Saudi, Egypt, North America, etc.).
-function paramsForCountry(cc?: string): adhan.CalculationParameters {
+// Calculation methods the user can pick manually. "auto" resolves by country.
+const METHODS: { id: string; label: string }[] = [
+  { id: "auto", label: "تلقائي (حسب البلد)" },
+  { id: "TN", label: "تونس" },
+  { id: "DZ", label: "الجزائر" },
+  { id: "MA", label: "المغرب" },
+  { id: "EGYPT", label: "مصر" },
+  { id: "UMM_AL_QURA", label: "أم القرى (السعودية)" },
+  { id: "DUBAI", label: "دبي / الإمارات" },
+  { id: "KUWAIT", label: "الكويت" },
+  { id: "QATAR", label: "قطر" },
+  { id: "TURKEY", label: "تركيا" },
+  { id: "TEHRAN", label: "إيران" },
+  { id: "KARACHI", label: "كراتشي" },
+  { id: "SINGAPORE", label: "سنغافورة" },
+  { id: "JAKIM", label: "ماليزيا / إندونيسيا" },
+  { id: "FRANCE", label: "فرنسا" },
+  { id: "NORTH_AMERICA", label: "أمريكا الشمالية" },
+  { id: "MWL", label: "رابطة العالم الإسلامي" }
+];
+
+function methodParams(id: string): adhan.CalculationParameters {
   const M = adhan.CalculationMethod;
   const custom = (fajr: number, isha: number) => {
     const p = M.Other();
@@ -24,33 +43,56 @@ function paramsForCountry(cc?: string): adhan.CalculationParameters {
     p.ishaAngle = isha;
     return p;
   };
-  let params: adhan.CalculationParameters;
-  let hanafi = false;
-  switch (cc) {
-    case "TN": params = custom(18, 18); break; // Tunisia
-    case "DZ": params = custom(18, 17); break; // Algeria
-    case "MA": params = custom(19, 17); break; // Morocco
-    case "EG": params = M.Egyptian(); break;
-    case "SA": params = M.UmmAlQura(); break;
-    case "AE": params = M.Dubai(); break;
-    case "KW": params = M.Kuwait(); break;
-    case "QA": params = M.Qatar(); break;
-    case "TR": params = M.Turkey(); break;
-    case "IR": params = M.Tehran(); break;
-    case "SG": params = M.Singapore(); break;
-    case "ID":
-    case "MY": params = custom(20, 18); break; // Kemenag / JAKIM
-    case "FR": params = custom(12, 12); break; // UOIF
-    case "US":
-    case "CA": params = M.NorthAmerica(); break;
-    case "PK":
-    case "IN":
-    case "BD":
-    case "AF": params = M.Karachi(); hanafi = true; break;
-    default: params = M.MuslimWorldLeague();
+  switch (id) {
+    case "TN": return custom(18, 18);
+    case "DZ": return custom(18, 17);
+    case "MA": return custom(19, 17);
+    case "EGYPT": return M.Egyptian();
+    case "UMM_AL_QURA": return M.UmmAlQura();
+    case "DUBAI": return M.Dubai();
+    case "KUWAIT": return M.Kuwait();
+    case "QATAR": return M.Qatar();
+    case "TURKEY": return M.Turkey();
+    case "TEHRAN": return M.Tehran();
+    case "KARACHI": return M.Karachi();
+    case "SINGAPORE": return M.Singapore();
+    case "JAKIM": return custom(20, 18);
+    case "FRANCE": return custom(12, 12);
+    case "NORTH_AMERICA": return M.NorthAmerica();
+    default: return M.MuslimWorldLeague();
   }
-  params.madhab = hanafi ? adhan.Madhab.Hanafi : adhan.Madhab.Shafi;
-  return params;
+}
+
+function countryToMethod(cc?: string): string {
+  const map: Record<string, string> = {
+    TN: "TN", DZ: "DZ", MA: "MA", EG: "EGYPT", SA: "UMM_AL_QURA", AE: "DUBAI", KW: "KUWAIT",
+    QA: "QATAR", TR: "TURKEY", IR: "TEHRAN", SG: "SINGAPORE", ID: "JAKIM", MY: "JAKIM",
+    FR: "FRANCE", US: "NORTH_AMERICA", CA: "NORTH_AMERICA", PK: "KARACHI", IN: "KARACHI",
+    BD: "KARACHI", AF: "KARACHI"
+  };
+  return (cc && map[cc]) || "MWL";
+}
+
+type PrayerSettings = {
+  method: string;
+  madhab: "shafi" | "hanafi";
+  tune: Record<PrayerKey, number>;
+};
+
+const DEFAULT_SETTINGS: PrayerSettings = {
+  method: "auto",
+  madhab: "shafi",
+  tune: { fajr: 0, sunrise: 0, dhuhr: 0, asr: 0, maghrib: 0, isha: 0 }
+};
+
+function loadSettings(): PrayerSettings {
+  try {
+    const raw = localStorage.getItem("nexus-prayer-settings");
+    if (raw) return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+  } catch {
+    /* ignore */
+  }
+  return DEFAULT_SETTINGS;
 }
 
 async function detectCountry(lat: number, lon: number): Promise<string | undefined> {
@@ -82,9 +124,13 @@ export function IslamicPanel() {
 }
 
 function PrayerTimes() {
+  const [coords, setCoords] = useState<{ lat: number; lon: number } | null>(null);
+  const [cc, setCc] = useState<string | undefined>(undefined);
   const [rows, setRows] = useState<{ key: PrayerKey; label: string; time: string }[] | null>(null);
   const [nextKey, setNextKey] = useState<PrayerKey | null>(null);
   const [error, setError] = useState("");
+  const [settings, setSettings] = useState<PrayerSettings>(loadSettings);
+  const [editing, setEditing] = useState(false);
 
   useEffect(() => {
     if (!navigator.geolocation) {
@@ -94,43 +140,89 @@ function PrayerTimes() {
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
         const { latitude, longitude } = pos.coords;
-        const cc = await detectCountry(latitude, longitude);
-        const params = paramsForCountry(cc);
-        const pt = new adhan.PrayerTimes(new adhan.Coordinates(latitude, longitude), new Date(), params);
-        const times: Record<PrayerKey, Date> = {
-          fajr: pt.fajr,
-          sunrise: pt.sunrise,
-          dhuhr: pt.dhuhr,
-          asr: pt.asr,
-          maghrib: pt.maghrib,
-          isha: pt.isha
-        };
-        setRows(
-          PRAYERS.map((p) => ({
-            key: p.key,
-            label: p.label,
-            time: times[p.key].toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-          }))
-        );
-        const np = pt.nextPrayer();
-        setNextKey(np === adhan.Prayer.None ? "fajr" : (np as PrayerKey));
+        setCoords({ lat: latitude, lon: longitude });
+        setCc(await detectCountry(latitude, longitude));
       },
       () => setError("فعّل الموقع لعرض مواقيت الصلاة"),
       { timeout: 10000, maximumAge: 3600000 }
     );
   }, []);
 
+  // Recompute whenever location or settings change.
+  useEffect(() => {
+    if (!coords) return;
+    const id = settings.method === "auto" ? countryToMethod(cc) : settings.method;
+    const params = methodParams(id);
+    params.madhab = settings.madhab === "hanafi" ? adhan.Madhab.Hanafi : adhan.Madhab.Shafi;
+    params.adjustments = { ...settings.tune };
+    const pt = new adhan.PrayerTimes(new adhan.Coordinates(coords.lat, coords.lon), new Date(), params);
+    const times: Record<PrayerKey, Date> = {
+      fajr: pt.fajr, sunrise: pt.sunrise, dhuhr: pt.dhuhr, asr: pt.asr, maghrib: pt.maghrib, isha: pt.isha
+    };
+    setRows(PRAYERS.map((p) => ({ key: p.key, label: p.label, time: times[p.key].toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) })));
+    const np = pt.nextPrayer();
+    setNextKey(np === adhan.Prayer.None ? "fajr" : (np as PrayerKey));
+  }, [coords, cc, settings]);
+
+  const update = useCallback((patch: Partial<PrayerSettings>) => {
+    setSettings((prev) => {
+      const next = { ...prev, ...patch };
+      localStorage.setItem("nexus-prayer-settings", JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
   if (error) return <p className="empty" dir="rtl">{error}</p>;
   if (!rows) return <p className="empty" dir="rtl">…جارٍ تحديد موقعك</p>;
 
   return (
-    <div className="prayer-list" dir="rtl">
-      {rows.map((p) => (
-        <div key={p.key} className={`prayer-row ${nextKey === p.key ? "next" : ""}`}>
-          <span>{p.label}</span>
-          <time>{p.time}</time>
+    <div dir="rtl">
+      <button className="prayer-edit-btn" onClick={() => setEditing((e) => !e)}>
+        <Settings2 size={14} /> تعديل الطريقة
+      </button>
+
+      {editing && (
+        <div className="prayer-settings">
+          <label>
+            الطريقة
+            <select value={settings.method} onChange={(e) => update({ method: e.target.value })}>
+              {METHODS.map((m) => (
+                <option key={m.id} value={m.id}>{m.label}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            مذهب العصر
+            <select value={settings.madhab} onChange={(e) => update({ madhab: e.target.value as "shafi" | "hanafi" })}>
+              <option value="shafi">الجمهور (شافعي)</option>
+              <option value="hanafi">حنفي</option>
+            </select>
+          </label>
+          <div className="prayer-tune">
+            <span className="tune-hint">تعديل بالدقائق (±) لمطابقة التوقيت الرسمي</span>
+            {PRAYERS.map((p) => (
+              <label key={p.key} className="tune-row">
+                {p.label}
+                <input
+                  type="number"
+                  value={settings.tune[p.key]}
+                  onChange={(e) => update({ tune: { ...settings.tune, [p.key]: Number(e.target.value) || 0 } })}
+                />
+              </label>
+            ))}
+          </div>
+          <button className="link-button" onClick={() => update(DEFAULT_SETTINGS)}>إعادة الضبط</button>
         </div>
-      ))}
+      )}
+
+      <div className="prayer-list">
+        {rows.map((p) => (
+          <div key={p.key} className={`prayer-row ${nextKey === p.key ? "next" : ""}`}>
+            <span>{p.label}</span>
+            <time>{p.time}</time>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

@@ -1333,6 +1333,74 @@ textarea:focus {
   border-color: transparent;
 }
 
+.prayer-edit-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 8px;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-strong);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.prayer-settings {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-strong);
+}
+
+.prayer-settings label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.prayer-settings select {
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+}
+
+.tune-hint {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.prayer-tune {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.tune-row {
+  display: grid;
+  gap: 2px;
+  font-size: 11px;
+}
+
+.tune-row input {
+  width: 100%;
+  padding: 6px;
+  text-align: center;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+}
+
 .prayer-list {
   display: grid;
   gap: 6px;
