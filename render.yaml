@@ -44,6 +44,14 @@ services:
         sync: false
       - key: R2_BUCKET
         sync: false
+      # ---- Web Push (closed-app notifications). Generate a key pair with
+      # `npx web-push generate-vapid-keys`. Without these, push is disabled. ----
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: VAPID_SUBJECT
+        value: mailto:admin@nexus.local
       - key: SMTP_HOST
         sync: false # optional: smtp.gmail.com for real verification emails
       - key: SMTP_PORT

@@ -16,6 +16,11 @@ const envSchema = z.object({
   R2_ACCESS_KEY_ID: z.string().optional(),
   R2_SECRET_ACCESS_KEY: z.string().optional(),
   R2_BUCKET: z.string().optional(),
+  // Web Push (VAPID). When the key pair is set, the API sends push
+  // notifications to offline recipients so messages arrive with the app closed.
+  VAPID_PUBLIC_KEY: z.string().optional(),
+  VAPID_PRIVATE_KEY: z.string().optional(),
+  VAPID_SUBJECT: z.string().default("mailto:admin@nexus.local"),
   // Comma-separated STUN urls. Defaults to Google's public STUN servers.
   STUN_URLS: z.string().default("stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302"),
   // Optional TURN relay for restrictive NATs / China network fallback.

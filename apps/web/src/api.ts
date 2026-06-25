@@ -152,6 +152,15 @@ export const api = {
   callStats(token: string) {
     return request<CallStats>("/calls/stats", {}, token);
   },
+  pushPublicKey() {
+    return request<{ key: string | null }>("/push/public-key");
+  },
+  pushSubscribe(token: string, subscription: unknown) {
+    return request<{ ok: true }>("/push/subscribe", { method: "POST", body: JSON.stringify(subscription) }, token);
+  },
+  pushUnsubscribe(token: string, endpoint: string) {
+    return request<void>("/push/unsubscribe", { method: "POST", body: JSON.stringify({ endpoint }) }, token);
+  },
   uploadRecording(token: string, callId: string, blob: Blob) {
     const body = new FormData();
     const extension = blob.type.includes("mp4") ? "mp4" : "webm";

@@ -66,3 +66,15 @@ export const mediaCaptionSchema = z.object({
   caption: z.string().max(4000).optional(),
   scheduledFor: z.string().datetime().optional()
 });
+
+export const pushSubscribeSchema = z.object({
+  endpoint: z.string().url().max(1000),
+  keys: z.object({
+    p256dh: z.string().min(1).max(500),
+    auth: z.string().min(1).max(500)
+  })
+});
+
+export const pushUnsubscribeSchema = z.object({
+  endpoint: z.string().url().max(1000)
+});

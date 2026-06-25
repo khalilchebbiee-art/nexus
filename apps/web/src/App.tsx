@@ -40,6 +40,7 @@ import { api, type Session } from "./api";
 import { CallProvider, useCall } from "./call";
 import { decryptText, deriveConversationKey, encryptText, loadLocalPrivateKey, setupKeys, WrongPasswordError } from "./e2ee";
 import { ensureNotificationPermission, playSound, showNotification, unlockAudio } from "./notify";
+import { registerPush } from "./push";
 // Code-split: the prayer-times panel pulls in the `adhan` library, which is
 // dead weight for the initial chat load. Loaded lazily in the sidebar.
 const IslamicPanel = lazy(() => import("./islamic").then((m) => ({ default: m.IslamicPanel })));
@@ -590,7 +591,8 @@ function Messenger({
   useEffect(() => {
     ensureNotificationPermission();
     unlockAudio();
-  }, []);
+    void registerPush(session.token);
+  }, [session.token]);
 
   // Lock the document to the (keyboard-resized) viewport so there is never any
   // scrollable space below the latest message — the chat fills exactly the area

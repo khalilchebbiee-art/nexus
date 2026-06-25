@@ -81,6 +81,21 @@ model User {
   notifications  Notification[]
   initiatedCalls CallSession[]    @relation("callInitiator")
   callParticipations CallParticipant[]
+  pushSubscriptions PushSubscription[]
+}
+
+// A browser Web Push subscription for a user's device, used to deliver
+// notifications when the app/tab is closed.
+model PushSubscription {
+  id        String   @id @default(cuid())
+  userId    String
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 model Friendship {

@@ -17,6 +17,7 @@ import {
 import { AppError, handleError, publicUser } from "../utils.js";
 import { extensionForMime } from "../media.js";
 import { persistUpload } from "../storage.js";
+import { sendPushToUser } from "../push.js";
 import { onlineUsers } from "../io.js";
 import { FriendshipStatus } from "@prisma/client";
 import type { Server } from "socket.io";
@@ -497,6 +498,28 @@ async function notifyMembers(
       messageId: message.id
     }))
   });
+
+  // Web Push to recipients who are currently offline (no live socket) so the
+  // message reaches them with the app closed. Online users already get the
+  // realtime event + in-app notification. Skip reaction noise.
+  if (type === NotificationType.MESSAGE || type === NotificationType.SCHEDULED) {
+    const offline = members.filter((member) => !onlineUsers.has(member.userId));
+    if (offline.length > 0) {
+      const sender = await prisma.user.findUnique({
+        where: { id: message.senderId },
+        select: { displayName: true, avatarUrl: true }
+      });
+      const title = sender?.displayName ?? "Nexus";
+      for (const member of offline) {
+        void sendPushToUser(member.userId, {
+          title,
+          body,
+          conversationId: message.conversationId,
+          icon: sender?.avatarUrl ?? null
+        });
+      }
+    }
+  }
 }
 
 function serializeConversation(conversation: {

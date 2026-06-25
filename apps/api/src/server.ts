@@ -12,6 +12,7 @@ import { friendsRouter } from "./routes/friends.js";
 import { conversationsRouter, startScheduledMessageWorker } from "./routes/conversations.js";
 import { notificationsRouter } from "./routes/notifications.js";
 import { callsRouter } from "./routes/calls.js";
+import { pushRouter } from "./routes/push.js";
 import { configureRealtime } from "./realtime.js";
 import { setIo } from "./io.js";
 
@@ -46,6 +47,7 @@ app.use("/friends", friendsRouter);
 app.use("/conversations", conversationsRouter(io));
 app.use("/notifications", notificationsRouter);
 app.use("/calls", callsRouter());
+app.use("/push", pushRouter);
 
 // Most hosts (Render, Railway, Fly, Heroku...) inject the port to bind via PORT.
 const port = process.env.PORT ? Number(process.env.PORT) : env.API_PORT;
