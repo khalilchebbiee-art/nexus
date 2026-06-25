@@ -9,7 +9,11 @@ export type User = {
   lastDeliveredAt?: string | null;
   lastReadAt?: string | null;
   publicKey?: string | null;
+  online?: boolean;
+  lastSeenAt?: string | null;
 };
+
+export type PresenceUpdate = { userId: string; online: boolean; lastSeenAt?: string | null };
 
 export type ReceiptUpdate = {
   conversationId: string;
@@ -42,10 +46,14 @@ export type Message = {
   deletedAt: string | null;
   scheduledFor: string | null;
   encrypted?: boolean;
+  replyToId?: string | null;
+  replyTo?: Message | null;
+  pinnedAt?: string | null;
   deliveredAt: string | null;
   createdAt: string;
   sender: User;
   reactions: MessageReaction[];
+  pending?: boolean;
 };
 
 export type Conversation = {

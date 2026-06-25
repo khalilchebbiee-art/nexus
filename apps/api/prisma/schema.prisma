@@ -62,6 +62,7 @@ model User {
   bio            String       @default("")
   avatarUrl      String?
   passwordHash   String
+  lastSeenAt     DateTime?
   // End-to-end encryption identity. The public key is shared; the private key
   // is only ever stored here wrapped (encrypted) with the user's password, so
   // the server can never decrypt it.
@@ -144,14 +145,20 @@ model Message {
   // When true, `body` holds an opaque AES-GCM ciphertext envelope the server
   // cannot read (end-to-end encrypted direct message).
   encrypted      Boolean      @default(false)
+  replyToId      String?
+  pinnedAt       DateTime?
+  pinnedById     String?
   deliveredAt    DateTime?    @default(now())
   createdAt      DateTime     @default(now())
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   sender         User         @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  replyTo        Message?     @relation("messageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies        Message[]    @relation("messageReplies")
   reactions      MessageReaction[]
 
   @@index([conversationId, createdAt])
   @@index([conversationId, deliveredAt])
+  @@index([conversationId, pinnedAt])
   @@index([scheduledFor, deliveredAt])
 }
 

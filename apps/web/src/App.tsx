@@ -4,6 +4,7 @@ import { io, type Socket } from "socket.io-client";
 import {
   Bell,
   CalendarClock,
+  Camera,
   Check,
   CheckCheck,
   ChevronDown,
@@ -17,12 +18,17 @@ import {
   Mic,
   Moon,
   Paperclip,
+  PanelLeftClose,
+  PanelLeftOpen,
   Pencil,
   Phone,
   PhoneCall,
+  Pin,
   Plus,
+  Reply,
   Search,
   Send,
+  Smile,
   Sun,
   Trash2,
   UserPlus,
@@ -33,7 +39,10 @@ import {
 import { api, type Session } from "./api";
 import { CallProvider, useCall } from "./call";
 import { decryptText, deriveConversationKey, encryptText, loadLocalPrivateKey, setupKeys, WrongPasswordError } from "./e2ee";
-import type { CallRecord, CallStats, Conversation, FriendRequest, GlobalSearch, Message, Notification, ReceiptUpdate, User } from "./types";
+import { ensureNotificationPermission, playSound, showNotification } from "./notify";
+import type { CallRecord, CallStats, Conversation, FriendRequest, GlobalSearch, Message, Notification, PresenceUpdate, ReceiptUpdate, User } from "./types";
+
+const EMOJIS = ["👍", "❤️", "😂", "🔥", "🥰", "😮", "😢", "😡", "🎉", "👏", "🙏", "💯", "😎", "🤔", "👀", "✅"];
 
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL ?? "http://localhost:4000";
 const savedTheme = localStorage.getItem("nexus-theme");
@@ -303,9 +312,21 @@ function Messenger({
   const [mobileListOpen, setMobileListOpen] = useState(true);
   const [status, setStatus] = useState("");
   const [callHistoryOpen, setCallHistoryOpen] = useState(false);
+  const [pinnedOpen, setPinnedOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [replyTo, setReplyTo] = useState<Message | null>(null);
+  const [typing, setTyping] = useState<{ conversationId: string; name: string } | null>(null);
   const [socket, setSocket] = useState<Socket | null>(null);
   const socketRef = useRef<Socket | null>(null);
   const activeConversationRef = useRef("");
+  const typingTimerRef = useRef<number | null>(null);
+
+  // Merge a presence change into both conversation members and the friends list.
+  const applyPresence = useCallback((p: PresenceUpdate) => {
+    const patch = (u: User) => (u.id === p.userId ? { ...u, online: p.online, lastSeenAt: p.lastSeenAt ?? u.lastSeenAt ?? null } : u);
+    setConversations((current) => current.map((c) => ({ ...c, members: c.members.map(patch) })));
+    setFriends((current) => current.map(patch));
+  }, []);
 
   const selected = conversations.find((conversation) => conversation.id === selectedId) ?? conversations[0];
   const peer = selected?.members.find((member) => member.id !== session.user.id) ?? selected?.members[0];
@@ -350,8 +371,13 @@ function Messenger({
     setSocket(socket);
     socket.on("message:new", (message: Message) => {
       setMessages((current) => (current.some((item) => item.id === message.id) ? current : [...current, message]));
+      const mine = message.senderId === session.user.id;
+      if (!mine) {
+        playSound("message");
+        showNotification("New message", message.encrypted ? "Encrypted message" : previewMessage(message) || "New message");
+      }
       // If the new message lands in the conversation we're looking at, mark it read.
-      if (message.conversationId === activeConversationRef.current && message.senderId !== session.user.id) {
+      if (message.conversationId === activeConversationRef.current && !mine) {
         socket.emit("conversation:read", message.conversationId);
       }
       void loadConversations();
@@ -360,6 +386,23 @@ function Messenger({
     socket.on("message:updated", (message: Message) => {
       setMessages((current) => current.map((item) => (item.id === message.id ? message : item)));
       void loadConversations();
+    });
+    socket.on("presence:update", (p: PresenceUpdate) => applyPresence(p));
+    socket.on("friend:request", () => {
+      void loadRequests();
+      playSound("message");
+      showNotification("Friend request", "Someone wants to connect on Nexus");
+    });
+    socket.on("friend:accepted", ({ conversationId }: { conversationId: string }) => {
+      void refresh();
+      if (conversationId) setSelectedId(conversationId);
+    });
+    socket.on("typing:start", ({ conversationId, user }: { conversationId: string; user: User }) => {
+      if (user.id === session.user.id) return;
+      setTyping({ conversationId, name: user.displayName });
+    });
+    socket.on("typing:stop", ({ conversationId }: { conversationId: string }) => {
+      setTyping((current) => (current?.conversationId === conversationId ? null : current));
     });
     socket.on("receipt:update", (receipt: ReceiptUpdate) => {
       setConversations((current) =>
@@ -385,7 +428,11 @@ function Messenger({
       socket.disconnect();
       setSocket(null);
     };
-  }, [loadConversations, loadNotifications, session.token]);
+  }, [loadConversations, loadNotifications, loadRequests, refresh, applyPresence, session.token, session.user.id]);
+
+  useEffect(() => {
+    ensureNotificationPermission();
+  }, []);
 
   useEffect(() => {
     if (!selected?.id) return;
@@ -455,10 +502,45 @@ function Messenger({
     await loadNotifications();
   }
 
+  // Optimistic send: show the message instantly, then reconcile with the server.
+  const addOptimistic = useCallback((message: Message) => {
+    setMessages((current) => [...current, message]);
+  }, []);
+  const settleOptimistic = useCallback((tempId: string, real: Message | null) => {
+    setMessages((current) => {
+      const without = current.filter((m) => m.id !== tempId);
+      if (real && !without.some((m) => m.id === real.id)) return [...without, real];
+      return without;
+    });
+  }, []);
+
+  const emitTyping = useCallback(
+    (conversationId: string) => {
+      socketRef.current?.emit("typing:start", conversationId);
+      if (typingTimerRef.current) window.clearTimeout(typingTimerRef.current);
+      typingTimerRef.current = window.setTimeout(() => {
+        socketRef.current?.emit("typing:stop", conversationId);
+      }, 2200);
+    },
+    []
+  );
+
+  async function togglePin(message: Message) {
+    const { message: updated } = await api.pinMessage(session.token, message.conversationId, message.id);
+    setMessages((current) => current.map((m) => (m.id === updated.id ? updated : m)));
+  }
+
+  const showTyping = typing && typing.conversationId === selected?.id;
+
   return (
     <CallProvider socket={socket} self={session.user} token={session.token}>
     <EncryptionProvider token={session.token} user={session.user}>
-    <main className="app-shell">
+    <main className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+      {sidebarCollapsed && (
+        <button className="icon-button sidebar-reveal" onClick={() => setSidebarCollapsed(false)} title="Show panel">
+          <PanelLeftOpen size={18} />
+        </button>
+      )}
       <aside className={`sidebar ${mobileListOpen ? "open" : ""}`}>
         <div className="topbar">
           <div className="identity">
@@ -469,6 +551,9 @@ function Messenger({
             </div>
           </div>
           <div className="top-actions">
+            <button className="icon-button" onClick={() => setSidebarCollapsed(true)} title="Hide panel">
+              <PanelLeftClose size={18} />
+            </button>
             <button className="icon-button" onClick={() => onThemeChange(theme === "dark" ? "light" : "dark")} title="Toggle theme">
               {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
             </button>
@@ -556,7 +641,7 @@ function Messenger({
                 className={`conversation-item ${conversation.id === selected?.id ? "active" : ""}`}
                 onClick={() => setSelectedId(conversation.id)}
               >
-                {conversation.type === "DIRECT" ? <Avatar user={other} /> : <div className="avatar placeholder">{conversation.type === "CHANNEL" ? <Hash size={18} /> : <Users size={18} />}</div>}
+                {conversation.type === "DIRECT" ? <PresenceAvatar user={other} /> : <div className="avatar placeholder">{conversation.type === "CHANNEL" ? <Hash size={18} /> : <Users size={18} />}</div>}
                 <span>
                   <strong>{title}</strong>
                   <small>{conversation.lastMessage ? previewMessage(conversation.lastMessage) : "Say hello"}</small>
@@ -591,11 +676,17 @@ function Messenger({
           </button>
           {peer ? (
             <div className="identity">
-              {selected?.type === "DIRECT" ? <Avatar user={peer} /> : <div className="avatar placeholder">{selected?.type === "CHANNEL" ? <Hash size={18} /> : <Users size={18} />}</div>}
+              {selected?.type === "DIRECT" ? <PresenceAvatar user={peer} /> : <div className="avatar placeholder">{selected?.type === "CHANNEL" ? <Hash size={18} /> : <Users size={18} />}</div>}
               <div>
                 <strong>{selectedTitle}</strong>
                 <span>
-                  {selected?.type === "DIRECT" ? `@${peer.username}` : `${selected?.members.length ?? 0} members`}
+                  {showTyping ? (
+                    <em className="typing-status">{typing?.name} is typing…</em>
+                  ) : selected?.type === "DIRECT" ? (
+                    peer.online ? "Active now" : peer.lastSeenAt ? `Last seen ${formatLastSeen(peer.lastSeenAt)}` : `@${peer.username}`
+                  ) : (
+                    `${selected?.members.length ?? 0} members`
+                  )}
                   <EncryptionBadge conversation={selected} />
                 </span>
               </div>
@@ -610,6 +701,7 @@ function Messenger({
             </div>
           )}
           <div className="chat-tools">
+            <button className="icon-button" title="Pinned messages" onClick={() => setPinnedOpen(true)}><Pin size={18} /></button>
             <button className="icon-button" title="Media gallery" onClick={() => setGalleryOpen(true)}><Images size={18} /></button>
             <CallButtons selected={selected} peer={peer} />
             <button className="icon-button" title="Call history" onClick={() => setCallHistoryOpen(true)}><PhoneCall size={18} /></button>
@@ -617,21 +709,37 @@ function Messenger({
           </div>
         </header>
 
+        {selected && messages.some((m) => m.pinnedAt) && (
+          <button className="pinned-bar" onClick={() => setPinnedOpen(true)}>
+            <Pin size={14} /> {messages.filter((m) => m.pinnedAt).length} pinned message{messages.filter((m) => m.pinnedAt).length > 1 ? "s" : ""}
+          </button>
+        )}
+
         <MessageList
           messages={messages}
           currentUserId={session.user.id}
           token={session.token}
           conversation={selected}
+          onReply={setReplyTo}
+          onTogglePin={togglePin}
         />
+
+        {showTyping && (
+          <div className="typing-bubble">
+            <span></span><span></span><span></span> {typing?.name} is typing
+          </div>
+        )}
 
         {selected && (
           <Composer
             token={session.token}
+            self={session.user}
             conversation={selected}
-            onSent={(message) => {
-              if (!message.deliveredAt) return;
-              setMessages((current) => (current.some((item) => item.id === message.id) ? current : [...current, message]));
-            }}
+            replyTo={replyTo}
+            onClearReply={() => setReplyTo(null)}
+            onTyping={emitTyping}
+            onOptimistic={addOptimistic}
+            onSettled={settleOptimistic}
           />
         )}
       </section>
@@ -647,6 +755,14 @@ function Messenger({
       {galleryOpen && selected && <GalleryDialog token={session.token} conversation={selected} onClose={() => setGalleryOpen(false)} />}
       {callHistoryOpen && (
         <CallHistoryDialog token={session.token} currentUserId={session.user.id} conversationId={selected?.id} onClose={() => setCallHistoryOpen(false)} />
+      )}
+      {pinnedOpen && selected && (
+        <PinnedDialog
+          token={session.token}
+          conversation={selected}
+          onClose={() => setPinnedOpen(false)}
+          onUnpin={togglePin}
+        />
       )}
     </main>
     </EncryptionProvider>
@@ -937,12 +1053,16 @@ function MessageList({
   messages,
   currentUserId,
   token,
-  conversation
+  conversation,
+  onReply,
+  onTogglePin
 }: {
   messages: Message[];
   currentUserId: string;
   token: string;
   conversation?: Conversation;
+  onReply: (message: Message) => void;
+  onTogglePin: (message: Message) => void;
 }) {
   const { encryptForConversation, decryptForConversation } = useEncryption();
   const conversationId = conversation?.id ?? "";
@@ -954,6 +1074,7 @@ function MessageList({
   const [showJump, setShowJump] = useState(false);
   const [editingId, setEditingId] = useState("");
   const [draft, setDraft] = useState("");
+  const [reactPicker, setReactPicker] = useState("");
 
   const isNearBottom = useCallback(() => {
     const node = listRef.current;
@@ -1024,9 +1145,16 @@ function MessageList({
         const mine = message.senderId === currentUserId;
         const reactionCounts = aggregateReactions(message);
         return (
-          <article key={message.id} className={`message ${mine ? "mine" : ""}`}>
+          <article key={message.id} className={`message ${mine ? "mine" : ""} ${message.pending ? "pending" : ""}`}>
             {!mine && <Avatar user={message.sender} />}
             <div className="bubble">
+              {message.pinnedAt && <div className="pin-marker"><Pin size={11} /> Pinned</div>}
+              {message.replyTo && (
+                <div className="reply-quote">
+                  <strong>{message.replyTo.senderId === currentUserId ? "You" : message.replyTo.sender?.displayName}</strong>
+                  <small>{previewMessage(message.replyTo)}</small>
+                </div>
+              )}
               {message.deletedAt ? (
                 <p className="muted">Message deleted</p>
               ) : (
@@ -1067,13 +1195,22 @@ function MessageList({
                   <Receipt status={receiptStatus(message, others)} showLabel={message.id === lastMineId} />
                 )}
               </div>
-              {!message.deletedAt && (
+              {!message.deletedAt && !message.pending && (
                 <div className="message-actions">
                   {["👍", "❤️", "😂"].map((emoji) => (
                     <button key={emoji} onClick={() => void api.react(token, conversationId, message.id, emoji)} title={`React ${emoji}`}>
                       {emoji}
                     </button>
                   ))}
+                  <button onClick={() => setReactPicker((id) => (id === message.id ? "" : message.id))} title="More reactions">
+                    <Smile size={14} />
+                  </button>
+                  <button onClick={() => onReply(message)} title="Reply">
+                    <Reply size={14} />
+                  </button>
+                  <button onClick={() => void onTogglePin(message)} title={message.pinnedAt ? "Unpin" : "Pin"} className={message.pinnedAt ? "active" : ""}>
+                    <Pin size={14} />
+                  </button>
                   {mine && message.type === "TEXT" && (
                     <button onClick={() => void startEdit(message)} title="Edit">
                       <Pencil size={14} />
@@ -1084,6 +1221,21 @@ function MessageList({
                       <Trash2 size={14} />
                     </button>
                   )}
+                </div>
+              )}
+              {reactPicker === message.id && (
+                <div className="emoji-picker">
+                  {EMOJIS.map((emoji) => (
+                    <button
+                      key={emoji}
+                      onClick={() => {
+                        void api.react(token, conversationId, message.id, emoji);
+                        setReactPicker("");
+                      }}
+                    >
+                      {emoji}
+                    </button>
+                  ))}
                 </div>
               )}
             </div>
@@ -1134,12 +1286,22 @@ function Media({ message, onReady }: { message: Message; onReady?: () => void })
 
 function Composer({
   token,
+  self,
   conversation,
-  onSent
+  replyTo,
+  onClearReply,
+  onTyping,
+  onOptimistic,
+  onSettled
 }: {
   token: string;
+  self: User;
   conversation: Conversation;
-  onSent: (message: Message) => void;
+  replyTo: Message | null;
+  onClearReply: () => void;
+  onTyping: (conversationId: string) => void;
+  onOptimistic: (message: Message) => void;
+  onSettled: (tempId: string, real: Message | null) => void;
 }) {
   const { encryptForConversation } = useEncryption();
   const conversationId = conversation.id;
@@ -1147,6 +1309,8 @@ function Composer({
   const [scheduledFor, setScheduledFor] = useState("");
   const [recording, setRecording] = useState(false);
   const [recordingError, setRecordingError] = useState("");
+  const [emojiOpen, setEmojiOpen] = useState(false);
+  const [cameraOpen, setCameraOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -1159,29 +1323,67 @@ function Composer({
     };
   }, []);
 
+  function makeTemp(partial: Partial<Message>): Message {
+    const now = new Date().toISOString();
+    return {
+      id: `temp-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      conversationId,
+      senderId: self.id,
+      sender: self,
+      type: "TEXT",
+      body: "",
+      mediaUrl: null,
+      originalMediaUrl: null,
+      storageProvider: "local",
+      mediaMime: null,
+      mediaSize: null,
+      editedAt: null,
+      deletedAt: null,
+      scheduledFor: null,
+      deliveredAt: now,
+      createdAt: now,
+      reactions: [],
+      pending: true,
+      ...partial
+    };
+  }
+
   async function sendText(event: React.FormEvent) {
     event.preventDefault();
     const text = body.trim();
     if (!text) return;
-    const { body: payload, encrypted } = await encryptForConversation(conversation, text);
-    const { message } = await api.sendMessage(
-      token,
-      conversationId,
-      payload,
-      scheduledFor ? new Date(scheduledFor).toISOString() : undefined,
-      encrypted
-    );
-    onSent(message);
     setBody("");
+    setEmojiOpen(false);
+    const scheduledIso = scheduledFor ? new Date(scheduledFor).toISOString() : undefined;
     setScheduledFor("");
+    const replyId = replyTo?.id;
+    const replySnapshot = replyTo;
+    onClearReply();
+
+    // Show it instantly (unless it's scheduled for later).
+    const temp = makeTemp({ body: text, replyToId: replyId ?? null, replyTo: replySnapshot ?? null });
+    if (!scheduledIso) onOptimistic(temp);
+    try {
+      const { body: payload, encrypted } = await encryptForConversation(conversation, text);
+      const { message } = await api.sendMessage(token, conversationId, payload, scheduledIso, encrypted, replyId);
+      if (!scheduledIso) onSettled(temp.id, message.deliveredAt ? message : null);
+    } catch {
+      if (!scheduledIso) onSettled(temp.id, null);
+      setRecordingError("Failed to send message");
+    }
   }
 
   async function sendFile(file: File | undefined) {
     if (!file) return;
-    const { message } = await api.sendMedia(token, conversationId, file, body.trim(), scheduledFor ? new Date(scheduledFor).toISOString() : undefined);
-    onSent(message);
-    setBody("");
-    setScheduledFor("");
+    const type = file.type.startsWith("image/") ? "IMAGE" : file.type.startsWith("video/") ? "VIDEO" : "VOICE";
+    const temp = makeTemp({ type, mediaUrl: URL.createObjectURL(file), mediaMime: file.type, mediaSize: file.size });
+    onOptimistic(temp);
+    try {
+      const { message } = await api.sendMedia(token, conversationId, file, "", undefined);
+      onSettled(temp.id, message);
+    } catch {
+      onSettled(temp.id, null);
+    }
     if (fileRef.current) fileRef.current.value = "";
   }
 
@@ -1231,26 +1433,177 @@ function Composer({
   }
 
   return (
-    <form className="composer" onSubmit={sendText}>
-      <input ref={fileRef} type="file" accept="image/*,video/*,audio/*" hidden onChange={(event) => void sendFile(event.target.files?.[0])} />
-      <button type="button" className="icon-button" onClick={() => fileRef.current?.click()} title="Attach media">
-        <Paperclip size={19} />
-      </button>
-      <button type="button" className={`icon-button ${recording ? "recording" : ""}`} onClick={() => void toggleRecording()} title={recording ? "Stop recording" : "Record voice note"}>
-        <Mic size={19} />
-      </button>
-      {recording && <span className="recording-pill">Recording</span>}
-      {recordingError && <span className="composer-error">{recordingError}</span>}
-      <label className="schedule-control" title="Schedule delivery">
-        <CalendarClock size={18} />
-        <input type="datetime-local" value={scheduledFor} onChange={(event) => setScheduledFor(event.target.value)} />
-      </label>
-      <input value={body} onChange={(event) => setBody(event.target.value)} placeholder="Message privately" />
-      <button className="send-button" disabled={!body.trim()}>
-        <Send size={18} />
-      </button>
-    </form>
+    <div className="composer-wrap">
+      {replyTo && (
+        <div className="reply-banner">
+          <div>
+            <strong>Replying to {replyTo.senderId === self.id ? "yourself" : replyTo.sender?.displayName}</strong>
+            <small>{previewMessage(replyTo)}</small>
+          </div>
+          <button className="icon-button" onClick={onClearReply} title="Cancel reply"><X size={16} /></button>
+        </div>
+      )}
+      {emojiOpen && (
+        <div className="emoji-picker composer-emoji">
+          {EMOJIS.map((emoji) => (
+            <button key={emoji} type="button" onClick={() => setBody((b) => b + emoji)}>
+              {emoji}
+            </button>
+          ))}
+        </div>
+      )}
+      <form className="composer" onSubmit={sendText}>
+        <input ref={fileRef} type="file" accept="image/*,video/*,audio/*" hidden onChange={(event) => void sendFile(event.target.files?.[0])} />
+        <button type="button" className="icon-button" onClick={() => fileRef.current?.click()} title="Attach media">
+          <Paperclip size={19} />
+        </button>
+        <button type="button" className="icon-button" onClick={() => setCameraOpen(true)} title="Take a photo">
+          <Camera size={19} />
+        </button>
+        <button type="button" className={`icon-button ${recording ? "recording" : ""}`} onClick={() => void toggleRecording()} title={recording ? "Stop recording" : "Record voice note"}>
+          <Mic size={19} />
+        </button>
+        <button type="button" className={`icon-button ${emojiOpen ? "active" : ""}`} onClick={() => setEmojiOpen((o) => !o)} title="Emoji">
+          <Smile size={19} />
+        </button>
+        {recording && <span className="recording-pill">Recording</span>}
+        {recordingError && <span className="composer-error">{recordingError}</span>}
+        <label className="schedule-control" title="Schedule delivery">
+          <CalendarClock size={18} />
+          <input type="datetime-local" value={scheduledFor} onChange={(event) => setScheduledFor(event.target.value)} />
+        </label>
+        <input
+          value={body}
+          onChange={(event) => {
+            setBody(event.target.value);
+            onTyping(conversationId);
+          }}
+          placeholder="Message privately"
+        />
+        <button className="send-button" disabled={!body.trim()}>
+          <Send size={18} />
+        </button>
+      </form>
+      {cameraOpen && <CameraDialog onClose={() => setCameraOpen(false)} onCapture={(file) => { setCameraOpen(false); void sendFile(file); }} />}
+    </div>
   );
+}
+
+function CameraDialog({ onClose, onCapture }: { onClose: () => void; onCapture: (file: File) => void }) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    navigator.mediaDevices
+      ?.getUserMedia({ video: { facingMode: "user" }, audio: false })
+      .then((stream) => {
+        if (!active) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        streamRef.current = stream;
+        if (videoRef.current) videoRef.current.srcObject = stream;
+      })
+      .catch(() => setError("Camera permission was blocked."));
+    return () => {
+      active = false;
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+    };
+  }, []);
+
+  function capture() {
+    const video = videoRef.current;
+    if (!video) return;
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext("2d")?.drawImage(video, 0, 0);
+    canvas.toBlob((blob) => {
+      if (blob) onCapture(new File([blob], `photo-${Date.now()}.jpg`, { type: "image/jpeg" }));
+    }, "image/jpeg", 0.92);
+  }
+
+  return (
+    <div className="dialog-backdrop">
+      <section className="dialog camera-dialog">
+        <div className="dialog-head">
+          <h2><Camera size={18} /> Camera</h2>
+          <button type="button" className="icon-button" onClick={onClose}><X size={18} /></button>
+        </div>
+        {error ? (
+          <p className="error">{error}</p>
+        ) : (
+          <>
+            <video ref={videoRef} className="camera-preview" autoPlay playsInline muted />
+            <button className="primary-button" onClick={capture}>Capture & send</button>
+          </>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function PinnedDialog({
+  token,
+  conversation,
+  onClose,
+  onUnpin
+}: {
+  token: string;
+  conversation: Conversation;
+  onClose: () => void;
+  onUnpin: (message: Message) => void;
+}) {
+  const [pins, setPins] = useState<Message[]>([]);
+  useEffect(() => {
+    void api.pins(token, conversation.id).then(({ pins }) => setPins(pins));
+  }, [token, conversation.id]);
+
+  return (
+    <div className="dialog-backdrop">
+      <section className="dialog">
+        <div className="dialog-head">
+          <h2><Pin size={18} /> Pinned messages</h2>
+          <button type="button" className="icon-button" onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="call-history-list">
+          {pins.length === 0 && <p className="empty">No pinned messages yet.</p>}
+          {pins.map((pin) => (
+            <div key={pin.id} className="call-history-item">
+              <div className="call-history-meta">
+                <strong>{pin.sender?.displayName}</strong>
+                <small>{previewMessage(pin)}</small>
+              </div>
+              <button className="icon-button" title="Unpin" onClick={() => { onUnpin(pin); setPins((c) => c.filter((p) => p.id !== pin.id)); }}>
+                <Pin size={15} />
+              </button>
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function PresenceAvatar({ user }: { user: User }) {
+  return (
+    <div className="avatar-wrap">
+      <Avatar user={user} />
+      {user.online && <span className="presence-dot" title="Online" />}
+    </div>
+  );
+}
+
+function formatLastSeen(iso: string) {
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
 function ProfileDialog({
@@ -1421,10 +1774,10 @@ function Avatar({ user }: { user: User }) {
 function UserRow({ user, action }: { user: User; action?: React.ReactNode }) {
   return (
     <div className="user-row">
-      <Avatar user={user} />
+      <PresenceAvatar user={user} />
       <span>
         <strong>{user.displayName}</strong>
-        <small>@{user.username}</small>
+        <small>{user.online ? "Active now" : user.lastSeenAt ? `Last seen ${formatLastSeen(user.lastSeenAt)}` : `@${user.username}`}</small>
       </span>
       {action}
     </div>

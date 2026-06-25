@@ -13,6 +13,7 @@ import { conversationsRouter, startScheduledMessageWorker } from "./routes/conve
 import { notificationsRouter } from "./routes/notifications.js";
 import { callsRouter } from "./routes/calls.js";
 import { configureRealtime } from "./realtime.js";
+import { setIo } from "./io.js";
 
 const app = express();
 const server = http.createServer(app);
@@ -20,6 +21,7 @@ const io = new Server(server, {
   cors: { origin: env.CLIENT_ORIGIN, credentials: true }
 });
 
+setIo(io);
 configureRealtime(io);
 startScheduledMessageWorker(io);
 

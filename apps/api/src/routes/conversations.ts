@@ -15,6 +15,7 @@ import {
   updateConversationSchema
 } from "../validators.js";
 import { handleError, publicUser } from "../utils.js";
+import { onlineUsers } from "../io.js";
 import type { Server } from "socket.io";
 
 const uploadRoot = path.resolve("uploads");
@@ -203,6 +204,7 @@ export function conversationsRouter(io: Server) {
         type: MessageType.TEXT,
         body: input.body,
         encrypted: input.encrypted ?? false,
+        replyToId: input.replyToId,
         scheduledFor: input.scheduledFor ? new Date(input.scheduledFor) : undefined
       });
       await notifyMembers(message, input.scheduledFor ? NotificationType.SCHEDULED : NotificationType.MESSAGE);
@@ -319,6 +321,42 @@ export function conversationsRouter(io: Server) {
     res.json({ message });
   });
 
+  router.get("/:conversationId/pins", async (req, res) => {
+    const conversationId = String(req.params.conversationId);
+    if (!(await canAccess(req.user!.id, conversationId))) {
+      res.status(403).json({ message: "Conversation unavailable" });
+      return;
+    }
+    const pins = await prisma.message.findMany({
+      where: { conversationId, pinnedAt: { not: null }, deletedAt: null },
+      include: messageInclude(),
+      orderBy: { pinnedAt: "desc" },
+      take: 50
+    });
+    res.json({ pins });
+  });
+
+  router.post("/:conversationId/messages/:messageId/pin", async (req, res) => {
+    const { conversationId, messageId } = req.params;
+    if (!(await canAccess(req.user!.id, conversationId))) {
+      res.status(403).json({ message: "Conversation unavailable" });
+      return;
+    }
+    const existing = await prisma.message.findFirst({ where: { id: messageId, conversationId } });
+    if (!existing) {
+      res.status(404).json({ message: "Message not found" });
+      return;
+    }
+    const pinning = !existing.pinnedAt;
+    const message = await prisma.message.update({
+      where: { id: messageId },
+      data: { pinnedAt: pinning ? new Date() : null, pinnedById: pinning ? req.user!.id : null },
+      include: messageInclude()
+    });
+    io.to(conversationId).emit("message:updated", message);
+    res.json({ message });
+  });
+
   return router;
 }
 
@@ -348,6 +386,7 @@ async function deliverScheduledMessages(io: Server) {
 function messageInclude() {
   return {
     sender: true,
+    replyTo: { include: { sender: true } },
     reactions: { include: { user: true }, orderBy: { createdAt: "asc" as const } }
   };
 }
@@ -359,6 +398,7 @@ async function createMessage(
     type: MessageType;
     body?: string;
     encrypted?: boolean;
+    replyToId?: string;
     mediaUrl?: string;
     originalMediaUrl?: string;
     mediaMime?: string;
@@ -446,7 +486,7 @@ function serializeConversation(conversation: {
     role?: ConversationRole;
     lastDeliveredAt?: Date | null;
     lastReadAt?: Date | null;
-    user: Parameters<typeof publicUser>[0];
+    user: Parameters<typeof publicUser>[0] & { lastSeenAt?: Date | null };
   }>;
   messages?: unknown[];
 }) {
@@ -460,7 +500,9 @@ function serializeConversation(conversation: {
       ...publicUser(member.user),
       role: member.role ?? ConversationRole.MEMBER,
       lastDeliveredAt: member.lastDeliveredAt ?? null,
-      lastReadAt: member.lastReadAt ?? null
+      lastReadAt: member.lastReadAt ?? null,
+      online: onlineUsers.has(member.user.id),
+      lastSeenAt: member.user.lastSeenAt ?? null
     })),
     lastMessage: conversation.messages?.[0] ?? null
   };

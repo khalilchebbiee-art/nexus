@@ -3,10 +3,15 @@ import { Router } from "express";
 import { prisma } from "../db.js";
 import { requireAuth } from "../auth.js";
 import { publicUser } from "../utils.js";
+import { emitToUser, onlineUsers } from "../io.js";
 
 export const friendsRouter = Router();
 
 friendsRouter.use(requireAuth);
+
+function withPresence(user: Parameters<typeof publicUser>[0] & { lastSeenAt?: Date | null }) {
+  return { ...publicUser(user), online: onlineUsers.has(user.id), lastSeenAt: user.lastSeenAt ?? null };
+}
 
 friendsRouter.get("/", async (req, res) => {
   const rows = await prisma.friendship.findMany({
@@ -19,7 +24,7 @@ friendsRouter.get("/", async (req, res) => {
   });
 
   res.json({
-    friends: rows.map((row) => publicUser(row.requesterId === req.user!.id ? row.receiver : row.requester))
+    friends: rows.map((row) => withPresence(row.requesterId === req.user!.id ? row.receiver : row.requester))
   });
 });
 
@@ -54,6 +59,7 @@ friendsRouter.post("/:userId/request", async (req, res) => {
   }
 
   const request = await prisma.friendship.create({ data: { requesterId: req.user!.id, receiverId } });
+  emitToUser(receiverId, "friend:request", { id: request.id, user: publicUser(req.user!) });
   res.status(201).json({ request });
 });
 
@@ -81,6 +87,8 @@ friendsRouter.post("/requests/:requestId/accept", async (req, res) => {
     include: { members: true }
   });
 
+  // Tell the original requester their request was accepted so their UI updates live.
+  emitToUser(request.requesterId, "friend:accepted", { conversationId: conversation.id, user: publicUser(req.user!) });
   res.json({ conversationId: conversation.id });
 });
 

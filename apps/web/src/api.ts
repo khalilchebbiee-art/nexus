@@ -29,7 +29,8 @@ async function request<T>(path: string, options: RequestInit = {}, token?: strin
 export const api = {
   mediaUrl(path: string | null) {
     if (!path) return "";
-    return path.startsWith("http") ? path : `${API_URL}${path}`;
+    if (path.startsWith("http") || path.startsWith("blob:") || path.startsWith("data:")) return path;
+    return `${API_URL}${path}`;
   },
   register(input: { email: string; username: string; displayName: string; password: string }) {
     return request<{ verificationRequired: true; email: string }>("/auth/register", { method: "POST", body: JSON.stringify(input) });
@@ -85,12 +86,18 @@ export const api = {
   messages(token: string, conversationId: string) {
     return request<{ messages: Message[] }>(`/conversations/${conversationId}/messages`, {}, token);
   },
-  sendMessage(token: string, conversationId: string, body: string, scheduledFor?: string, encrypted?: boolean) {
+  sendMessage(token: string, conversationId: string, body: string, scheduledFor?: string, encrypted?: boolean, replyToId?: string) {
     return request<{ message: Message }>(
       `/conversations/${conversationId}/messages`,
-      { method: "POST", body: JSON.stringify({ body, scheduledFor, encrypted }) },
+      { method: "POST", body: JSON.stringify({ body, scheduledFor, encrypted, replyToId }) },
       token
     );
+  },
+  pinMessage(token: string, conversationId: string, messageId: string) {
+    return request<{ message: Message }>(`/conversations/${conversationId}/messages/${messageId}/pin`, { method: "POST" }, token);
+  },
+  pins(token: string, conversationId: string) {
+    return request<{ pins: Message[] }>(`/conversations/${conversationId}/pins`, {}, token);
   },
   sendMedia(token: string, conversationId: string, file: File, caption: string, scheduledFor?: string) {
     const body = new FormData();

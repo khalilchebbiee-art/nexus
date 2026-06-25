@@ -4,6 +4,15 @@ import { getUserFromToken } from "./auth.js";
 import { prisma } from "./db.js";
 import { iceServers } from "./ice.js";
 import { publicUser } from "./utils.js";
+import { onlineUsers } from "./io.js";
+
+async function friendIds(userId: string) {
+  const rows = await prisma.friendship.findMany({
+    where: { status: "ACCEPTED", OR: [{ requesterId: userId }, { receiverId: userId }] },
+    select: { requesterId: true, receiverId: true }
+  });
+  return rows.map((row) => (row.requesterId === userId ? row.receiverId : row.requesterId));
+}
 
 const RING_TIMEOUT_MS = 35_000;
 const ringTimers = new Map<string, NodeJS.Timeout>();
@@ -33,9 +42,29 @@ export function configureRealtime(io: Server) {
     // Personal room so calls and receipts can target a specific user.
     socket.join(userRoom(userId));
 
+    // Presence: announce online to friends.
+    const wasOffline = !onlineUsers.has(userId);
+    onlineUsers.add(userId);
+    if (wasOffline) {
+      void friendIds(userId).then((ids) => {
+        for (const id of ids) io.to(userRoom(id)).emit("presence:update", { userId, online: true });
+      });
+    }
+
     // Coming online means every pending message addressed to this user is now
     // delivered to a device. Stamp all their memberships and let senders know.
     void markAllDelivered(io, userId);
+
+    socket.on("disconnect", async () => {
+      const sockets = await io.in(userRoom(userId)).fetchSockets();
+      if (sockets.length === 0) {
+        onlineUsers.delete(userId);
+        const lastSeenAt = new Date();
+        await prisma.user.update({ where: { id: userId }, data: { lastSeenAt } }).catch(() => {});
+        const ids = await friendIds(userId);
+        for (const id of ids) io.to(userRoom(id)).emit("presence:update", { userId, online: false, lastSeenAt: lastSeenAt.toISOString() });
+      }
+    });
 
     socket.on("conversation:join", async (conversationId: string) => {
       const member = await prisma.conversationMember.findUnique({

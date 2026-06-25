@@ -37,7 +37,8 @@ export const profileSchema = z.object({
 export const textMessageSchema = z.object({
   body: z.string().min(1).max(8000),
   scheduledFor: z.string().datetime().optional(),
-  encrypted: z.boolean().optional()
+  encrypted: z.boolean().optional(),
+  replyToId: z.string().min(1).optional()
 });
 
 export const conversationSchema = z.object({

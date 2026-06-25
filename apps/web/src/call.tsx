@@ -63,6 +63,7 @@ export function CallProvider({
 
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localPreviewRef = useRef<MediaStream>(new MediaStream());
@@ -161,6 +162,9 @@ export function CallProvider({
         }
       });
       if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStreamRef.current;
+      // Always route audio through a dedicated <audio> element so voice-only
+      // calls (which render no <video>) are actually heard.
+      if (remoteAudioRef.current) remoteAudioRef.current.srcObject = remoteStreamRef.current;
     };
 
     pc.onconnectionstatechange = () => {
@@ -346,6 +350,7 @@ export function CallProvider({
   useEffect(() => {
     if (call && localVideoRef.current) localVideoRef.current.srcObject = localPreviewRef.current;
     if (call && remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStreamRef.current;
+    if (call && remoteAudioRef.current) remoteAudioRef.current.srcObject = remoteStreamRef.current;
   }, [call]);
 
   // Auto-clear transient error toasts.
@@ -476,6 +481,7 @@ export function CallProvider({
           error={error}
           localVideoRef={localVideoRef}
           remoteVideoRef={remoteVideoRef}
+          remoteAudioRef={remoteAudioRef}
           onAccept={acceptCall}
           onReject={rejectCall}
           onHangUp={hangUp}
@@ -503,6 +509,7 @@ function CallOverlay({
   error,
   localVideoRef,
   remoteVideoRef,
+  remoteAudioRef,
   onAccept,
   onReject,
   onHangUp,
@@ -524,6 +531,7 @@ function CallOverlay({
   error: string;
   localVideoRef: React.RefObject<HTMLVideoElement | null>;
   remoteVideoRef: React.RefObject<HTMLVideoElement | null>;
+  remoteAudioRef: React.RefObject<HTMLAudioElement | null>;
   onAccept: () => void;
   onReject: () => void;
   onHangUp: () => void;
@@ -545,7 +553,8 @@ function CallOverlay({
   return (
     <div className={`call-overlay ${call.state}`}>
       <div className="call-stage">
-        {isVideo && <video ref={remoteVideoRef} className="call-remote" autoPlay playsInline />}
+        <audio ref={remoteAudioRef} autoPlay playsInline />
+        {isVideo && <video ref={remoteVideoRef} className="call-remote" autoPlay playsInline muted />}
         {(!isVideo || call.state !== "active") && (
           <div className="call-poster">
             <Avatar user={call.peer} />
