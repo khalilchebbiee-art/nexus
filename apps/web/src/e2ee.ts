@@ -58,6 +58,15 @@ async function idbPut(userId: string, jwk: JsonWebKey): Promise<void> {
   });
 }
 
+async function idbDelete(userId: string): Promise<void> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite").objectStore(STORE).delete(userId);
+    tx.onsuccess = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
 // ---------- key import/export ----------
 function importPrivate(jwk: JsonWebKey): Promise<CryptoKey> {
   return crypto.subtle.importKey("jwk", jwk, EC_PARAMS, true, ["deriveKey", "deriveBits"]);
@@ -153,6 +162,29 @@ export async function setupKeys(token: string, userId: string, password: string)
 export async function loadLocalPrivateKey(userId: string): Promise<CryptoKey | null> {
   const local = await idbGet(userId);
   return local ? importPrivate(local) : null;
+}
+
+/**
+ * Forgets this device's stored private key. Used after a password reset, which
+ * clears the server-side identity — the next setupKeys() then generates a fresh
+ * identity instead of silently reusing a key the server no longer recognises.
+ */
+export async function clearLocalPrivateKey(userId: string): Promise<void> {
+  await idbDelete(userId).catch(() => {});
+}
+
+/**
+ * Re-wraps this device's stored private key under a new password, returning the
+ * new server backup envelope. Used by "change password" so existing encrypted
+ * messages stay decryptable. Returns null when this device holds no key.
+ */
+export async function rewrapLocalPrivateKey(
+  userId: string,
+  newPassword: string
+): Promise<{ encryptedPrivateKey: string; keySalt: string; keyIv: string } | null> {
+  const jwk = await idbGet(userId);
+  if (!jwk) return null;
+  return wrapPrivateKey(jwk, newPassword);
 }
 
 // ---------- per-conversation symmetric key ----------

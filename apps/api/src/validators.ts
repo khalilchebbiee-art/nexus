@@ -31,7 +31,33 @@ export const keyBackupSchema = z.object({
 export const profileSchema = z.object({
   displayName: z.string().min(2).max(60).optional(),
   bio: z.string().max(180).optional(),
-  avatarUrl: z.string().url().max(500).optional().or(z.literal(""))
+  avatarUrl: z.string().url().max(500).optional().or(z.literal("")),
+  username: z.string().min(3).max(24).regex(/^[a-zA-Z0-9_]+$/).optional()
+});
+
+// Re-wrapped E2EE key material supplied when the password changes, so the
+// private key stays decryptable under the new password. Public key is immutable
+// and therefore never accepted here.
+const keyRewrap = z.object({
+  encryptedPrivateKey: z.string().min(1).max(8000),
+  keySalt: z.string().min(1).max(512),
+  keyIv: z.string().min(1).max(512)
+});
+
+export const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1).max(128),
+  newPassword: z.string().min(10).max(128),
+  keyBackup: keyRewrap.optional()
+});
+
+export const forgotPasswordSchema = z.object({
+  email: z.string().email().max(254)
+});
+
+export const resetPasswordSchema = z.object({
+  email: z.string().email().max(254),
+  code: z.string().regex(/^\d{6}$/),
+  newPassword: z.string().min(10).max(128)
 });
 
 export const textMessageSchema = z.object({
@@ -56,6 +82,15 @@ export const updateConversationSchema = z.object({
 
 export const editMessageSchema = z.object({
   body: z.string().min(1).max(8000)
+});
+
+export const forwardMessageSchema = z.object({
+  toConversationId: z.string().min(1)
+});
+
+export const muteSchema = z.object({
+  // Minutes to mute for; omit/0 = mute indefinitely; negative not allowed.
+  minutes: z.number().int().min(0).max(525600).optional()
 });
 
 export const reactionSchema = z.object({

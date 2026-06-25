@@ -82,6 +82,7 @@ model User {
   initiatedCalls CallSession[]    @relation("callInitiator")
   callParticipations CallParticipant[]
   pushSubscriptions PushSubscription[]
+  passwordResets    PasswordReset[]
 }
 
 // A browser Web Push subscription for a user's device, used to deliver
@@ -136,6 +137,13 @@ model ConversationMember {
   joinedAt       DateTime     @default(now())
   lastDeliveredAt DateTime?
   lastReadAt      DateTime?
+  // When set, the conversation is removed from this member's list (a "delete /
+  // clear chat" action). It reappears automatically once a message newer than
+  // this timestamp arrives, matching Messenger's hide-until-next-message rule.
+  hiddenAt        DateTime?
+  // When set and in the future, notifications/sounds for this conversation are
+  // suppressed for this member ("mute"). A far-future value means muted forever.
+  mutedUntil      DateTime?
   user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
@@ -236,6 +244,21 @@ model CallParticipant {
 
   @@unique([callId, userId])
   @@index([userId])
+}
+
+// Holds a short-lived emailed code for a forgot-password reset. The code is
+// stored hashed; the row is consumed (deleted) once the password is reset.
+model PasswordReset {
+  id        String   @id @default(cuid())
+  userId    String
+  codeHash  String
+  attempts  Int      @default(0)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
 }
 
 // Holds a registration until the emailed code is confirmed. The real User row

@@ -6,6 +6,9 @@ export type User = {
   avatarUrl: string | null;
   role?: "OWNER" | "ADMIN" | "MEMBER";
   friendshipStatus?: "PENDING" | "ACCEPTED" | "DECLINED" | "BLOCKED" | null;
+  // True when a pending friendship was initiated by the current user.
+  outgoing?: boolean;
+  mutualFriends?: number;
   lastDeliveredAt?: string | null;
   lastReadAt?: string | null;
   publicKey?: string | null;
@@ -64,6 +67,8 @@ export type Conversation = {
   ownerId: string | null;
   members: User[];
   lastMessage: Message | null;
+  unreadCount?: number;
+  muted?: boolean;
 };
 
 export type FriendRequest = {
