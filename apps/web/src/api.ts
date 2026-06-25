@@ -18,6 +18,12 @@ async function request<T>(path: string, options: RequestInit = {}, token?: strin
   });
 
   if (!response.ok) {
+    // An authenticated request rejected by the server means the session is no
+    // longer valid (expired / revoked). Signal the app to log out cleanly
+    // instead of leaving the user in a broken, half-loaded state.
+    if (response.status === 401 && token) {
+      window.dispatchEvent(new Event("nexus-unauthorized"));
+    }
     const body = await response.json().catch(() => ({ message: "Request failed" }));
     throw new Error(body.message ?? "Request failed");
   }

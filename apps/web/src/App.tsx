@@ -184,12 +184,27 @@ export function App() {
 
   useEffect(() => {
     if (!token) return;
-    void api.me(token).then(({ user }) => setSession((current) => (current ? { ...current, user } : current)));
+    // Validate the saved session; a failure (e.g. 401) triggers a clean logout
+    // via the global handler below, so swallow the rejection here.
+    void api
+      .me(token)
+      .then(({ user }) => setSession((current) => (current ? { ...current, user } : current)))
+      .catch(() => {});
   }, [token]);
 
   useEffect(() => {
     if (session) localStorage.setItem("nexus-session", JSON.stringify(session));
   }, [session]);
+
+  // Any authenticated request that gets a 401 dispatches this — log out cleanly.
+  useEffect(() => {
+    const onUnauthorized = () => {
+      localStorage.removeItem("nexus-session");
+      setSession(null);
+    };
+    window.addEventListener("nexus-unauthorized", onUnauthorized);
+    return () => window.removeEventListener("nexus-unauthorized", onUnauthorized);
+  }, []);
 
   function logout() {
     localStorage.removeItem("nexus-session");
@@ -494,6 +509,13 @@ function Messenger({
     const socket = io(SOCKET_URL, { auth: { token: session.token } });
     socketRef.current = socket;
     setSocket(socket);
+    // A rejected socket handshake means the token is invalid — trigger the same
+    // global logout as a 401 rather than retrying forever with no realtime.
+    socket.on("connect_error", (err) => {
+      if (err.message === "Invalid session" || err.message === "Authentication required") {
+        window.dispatchEvent(new Event("nexus-unauthorized"));
+      }
+    });
     socket.on("message:new", (message: Message) => {
       setMessages((current) => (current.some((item) => item.id === message.id) ? current : [...current, message]));
       const mine = message.senderId === session.user.id;
@@ -619,12 +641,19 @@ function Messenger({
 
   useEffect(() => {
     if (!selected?.id) return;
-    activeConversationRef.current = selected.id;
-    socketRef.current?.emit("conversation:join", selected.id);
-    socketRef.current?.emit("conversation:read", selected.id);
-    void api.messages(session.token, selected.id).then(({ messages }) => setMessages(messages));
+    const conversationId = selected.id;
+    activeConversationRef.current = conversationId;
+    socketRef.current?.emit("conversation:join", conversationId);
+    socketRef.current?.emit("conversation:read", conversationId);
+    // Guard against out-of-order responses when switching chats quickly: only
+    // apply messages that still belong to the conversation in view.
+    let active = true;
+    void api.messages(session.token, conversationId).then(({ messages }) => {
+      if (active && activeConversationRef.current === conversationId) setMessages(messages);
+    });
     setMobileListOpen(false);
     return () => {
+      active = false;
       activeConversationRef.current = "";
     };
   }, [selected?.id, session.token]);
